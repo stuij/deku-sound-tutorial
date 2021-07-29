@@ -1,0 +1,409 @@
+<html>
+
+<head>
+<title>Sound Mixing - Deku's Tree of Art</title>
+</head>
+
+<body text=#ffffff link=#80ffff vlink=#80e0f0 bgcolor=#c09973 bg=graphics/bg.gif>
+<center><font size="+3" color=#604040><b>Sound on the Gameboy Advance</b></font><br><font size="+2" color = #4080c0>Day 6</font></center><br><br>
+
+Getting close! Today's article was meant to teach all there is to know about effects, but due to the large amount of new code needed, I've decided to break it up into two parts. This way the core functions won't be modified too much, so it should be easier to follow.<br>
+Keep in mind that this specific implementation of effects is only one way to do it. I've tried (and succeeded) with others and this is what I believe to be the cleanest approach. Still, there are some pesky special cases involved, so if you go "Hey, this guy's an idiot! I could do it way better", then by all means do so (and let me know how you did it if you're feeling friendly :) )<br><br>
+Ready to dive into the mud and try to untangle the web of code strung through it? I thought so! Hop on in, and be careful not to drown!<br><br>
+
+<a href="sound6.html#effects">1. Effects - Planning</a><br>
+<a href="sound6.html#implement">2. Effects - Implementation details</a><br>
+<a href="sound6.html#speed">3. Effect F: Speed and tempo</a><br><br>
+
+<a href="sound6.zip">Example project (11KB)</a><br><br><br><br>
+
+
+
+<font size=+2><a name=effects>1. Effects - Planning</font><br><br>
+
+Our player hardly sounded right at all after all that work last time, but it's really not far from completion as it seems. The rest of the work is in implementing the many effects provided by the MOD format. After all the times I've mentioned them, you're probably asking yourself, "what the heck IS an effect anyway?"<br>
+They do all sorts of things, so there's really no single "this is what they are" explanation. Some examples are pitch slides, which increase or decrease the pitch smoothly instead of having to go whole notes at a time, or note delay, which lets you specify a number of ticks to wait before actually playing a note that you specify.<br><br>
+
+Effects are also where the difference between speed and tempo really becomes clear. The speed is normally set to 6, causing a delay of 6 MOD ticks between each row, right? And like I mentioned above, note delay specifies the number of MOD ticks to wait after the row has been processed before playing the note, so normally a delay of 3 ticks will make the note trigger half way between two rows. However, if the speed is set to 4 for example, a delay of 3 is no longer half way between rows, it's 3/4 of the way. Changing speed and tempo like this gives you finer control over the timing of your song, which is a good thing if you're a musician.<br><br>
+
+Each effect is named with a hex digit 0-9, A-F. Along with each effect comes an 8-bit parameter, which is used differently for each effect, but it usually makes pretty good sense. For example, effect C is set volume, and the parameter is the volume level, or effect 1 is pitch slide up and the parameter is the speed in MOD periods.<br><br>
+
+As for how to actually code these, I can think of 4 basic approaches:<br><br>
+
+1. Code in each effect wherever seems best for it, just using if(effect == ?) and switch statements.<br>
+Pros: You don't have to think up-front, and can attack them one at a time. Also nice to have access to all the local variables.<br>
+Cons: It quickly becomes a horrible mess, and if it doesn't work right the first time, you have no idea why. A bit inefficient doing if statements all over the place, and can get a lot of duplicated code if you're not careful. Bad approach.<br><br>
+
+2. Make seperate functions for each effect, and call them with ifs where needed.<br>
+Pros: Doesn't distract as much from the main player logic, easier to avoid duplicating code.<br>
+Cons: Just as inefficient as the previous method in terms of if statements, and still scattered around and hard to track problems. Also kills the main advantage of the previous method, having access to local vars. Instead you have to pass things around, which can be annoying.<br><br>
+
+3. Collect up all of the effects and put them in a single function, using a big switch statement and a few ifs for special-cases.<br>
+Pros: Much better organized and easier to debug. More efficient doing a single switch instead of scattered ifs.<br>
+Cons: Because some effects need to be done at different places in the whole updating process (for example, note delay needs to be handled before playing the note, but fine pitch slides need to modify the frequency AFTER the note is played), you have to think up a good system to deal with all the different cases. Also can't access locals, but that can be dealt with at the same time as the ordering problems.<br><br>
+
+4. Make seperate functions like method 2, and collect them together like 3. Instead of doing a switch statement, put them in a table of function pointers. That way, we just have to index into the array with the effect number and boom, done.<br>
+Pros: Basically the same as 3 but a little more elegant, and like 2, easier to avoid code duplication.<br>
+Cons: Same as 3.<br><br>
+
+As you may have guessed, we're going with 4. It's a little more work to plan it out, and difficult if you're not familiar with how to handle each effect to begin with, but it'll save you a lot of grief in the end. Method 3 is essentially the same thing, so you could use it too if you like. I just like the convenience of recycling code when each effect is a seperate function already.<br><br><br><br>
+
+
+
+<font size=+2><a name=implement>2. Effects - Implementation details</font><br><br>
+
+One point to make before getting too deep into this is that effects are usually updated differently on row-ticks than they are on the ticks inbetween. Many of them (like volslide and vibrato) are not updated at all on row-ticks, and others (ex. set tempo, set volume) do something immediately, and then nothing on the mid-ticks.<br>
+Because of this, we'll actually make 2 tables of function pointers, one with the functions to update each effect on row-ticks, and one for inbetween ticks. To keep from having to make 2 functions for each one since most of them are either row-tick only or non-row only anyway, we'll make NULL a valid pointer in the table, and check for it before actually branching to the function. This way, we only write functions we need, and don't have to do an if(thisIsARowTick) in every one. Elegant as well as efficient (yay!).<br><br>
+
+Next is how to deal with things being done in the wrong order, and not having access to any local variables. For the ordering, we need to make some variables to specify what to do and what not to do. For example, we need a flag to specify wether to actually trigger the note or not, for things like note delay or tone porta (pitch slide to note, so keep playing the current note and only move toward the new one each tick). Then for things like that fine slide up (which is an immediate single tick's worth of pitch slide), we'll store a slide amount that gets initialized to 0, and then apply that after starting the note. This way, we can set it to the fine slide amount before the note is played, and still have the effect after. Sort of special-casing it, but not too ugly at least.<br>
+However, to keep things simple, we'll ignore these troublesome effects for now and deal with them next time.<br><br>
+
+The one problem with all these variables is that we have to pass them around to the effect functions, which is even worse when they're all in a function pointer table so they have to have matching parameters.<br>
+To make this as easy as using all the locals in the first place, we'll just shove everything that effects ever need access to into a structure and pass the address of that around. Then the effect functions only need a single argument, and if we work with the struct in place of the seperate local vars in our main updating, there's not even any data copying going on. Very good.<br>
+We'll call the structure MOD_UPDATE_VARS, because it's only used as local vars during updating. It looks like this right now:<br><br>
+
+<pre>typedef struct _MOD_UPDATE_VARS
+{
+   MOD_CHANNEL   *modChn;       // Pointer to the current channel (sndMod.channel[curChn])
+   SOUND_CHANNEL *sndChn;       // Corresponding mixer channel (sndChannel[curChn])
+
+   u8            note;          // These 4 are just the local vars from MODProcessRow
+   u8            sample;
+   u8            effect;
+   u8            param;
+
+      // If TRUE, play the note after effect processing is done (if there is one). 
+      // If FALSE, never play note either way. Needed by things like note delay to 
+      // prevent note from being played immediately. Initially TRUE on row-ticks, 
+      // FALSE on middle ticks, but can be set TRUE during middle ticks for note 
+      // delay to finally play the note
+   BOOL          playNote;
+
+      // If TRUE, set the mixer channel volume to the MOD channel volume after effect 
+      // processing. If FALSE, never change the current mix volume. Initially FALSE on 
+      // row and mid ticks. Set TRUE if new sample specified, or volume effects used
+   BOOL          setMixChnVol;
+
+      // Like volume, recalculates mix increment after effect processing. Initally FALSE on 
+      // row and mid ticks. Set TRUE by note getting played, or by pitch-modifying effects
+   BOOL          setMixChnFreq;
+
+} MOD_UPDATE_VARS;</pre>
+
+However, beause I hate having booleans all over taking up 8 bits each when they really only need 1, we'll combine those 3 flags into one variable. We'll name it updateFlags, and make a nice enum to remember which is which:<br><br>
+
+<pre>typedef enum _MOD_UPDATE_FLAGS
+{
+   MOD_UPD_FLG_PLAY_NOTE = BIT00,
+   MOD_UPD_FLG_SET_VOL   = BIT01,
+   MOD_UPD_FLG_SET_FREQ  = BIT02,
+
+} MOD_UPDATE_FLAGS;
+
+typedef struct _MOD_UPDATE_VARS
+{
+   MOD_CHANNEL   *modChn;       // Pointer to the current channel (sndMod.channel[curChn])
+   SOUND_CHANNEL *sndChn;       // Corresponding mixer channel (sndChannel[curChn])
+
+   u8          note;            // These 4 are just the local vars from MODProcessRow
+   u8          sample;
+   u8          effect;
+   u8          param;
+
+   u8          updateFlags;     // MOD_UPDATE_FLAGS
+
+} MOD_UPDATE_VARS;</pre>
+
+Now that the variable accessing problem is sorted out, we can create the function pointer table for the effects and get the MOD updating set up to call them, and to work with the update flags.<br>
+The function pointers will each take a pointer to a MOD_UPDATE_VARS, and return nothing. Since we're doing 2 tables, one for row-ticks and one for mid-ticks, we'll make another enum for selecting the table. Result:<br><br>
+
+<pre>typedef void (*MOD_EFFECT_FUNC_PTR)(MOD_UPDATE_VARS *vars);
+
+typedef enum _MOD_EFFECT_TABLE
+{
+   MOD_EFFECT_TABLE_ROW,
+   MOD_EFFECT_TABLE_MID,
+
+   MOD_EFFECT_TABLE_NUM,
+
+} MOD_EFFECT_TABLE;
+
+static const MOD_EFFECT_FUNC_PTR modEffectTable[MOD_EFFECT_TABLE_NUM][16] =
+{
+   {   // MOD_EFFECT_TABLE_ROW
+      NULL,   // 0x0: Arpeggio
+      NULL,   // 0x1: Porta up
+      NULL,   // 0x2: Porta down
+      NULL,   // 0x3: Tone porta
+      NULL,   // 0x4: Vibrato
+      NULL,   // 0x5: Volslide+Tone porta
+      NULL,   // 0x6: Volslide+Vibrato
+      NULL,   // 0x7: Tremolo
+      NULL,   // 0x8: Set panning
+      NULL,   // 0x9: Sample offset
+      NULL,   // 0xA: Volume slide
+      NULL,   // 0xB: Jump to order
+      NULL,   // 0xC: Set volume
+      NULL,   // 0xD: Break to row
+      NULL,   // 0xE: Special (more on this later)
+      NULL    // 0xF: Speed/Tempo
+   },
+   {   // MOD_EFFECT_TABLE_MID
+      NULL,   // 0x0: Arpeggio
+      ... same as above
+   }
+};</pre>
+
+Now we can just plug in our effect functions as we write them and magically they work!<br>
+...as soon as we add the code to call them in MODProcessRow.<br><br>
+
+One tricky thing is that as you can see in the table, all 16 possible effects are used, so we have no extra value to use for no-effect like we do with notes and samples. That is, unless we wanted to use more than 4 bits to store it, which we don't because we'll be compressing patterns later on, and it's worth a little trouble to save that one extra bit.<br>
+The way MOD handles it, which we will use too, is to say that effect 0 (arpeggio) with parameter 0 means no-effect. Most effects take a 0 parameter to mean that they should use the last parameter used with that effect, but that's really just to make things more convenient when writing music, as you can just copy/paste the parameter every time to get the same result. Since arpeggio is not supposed to do that, all is well.<br>
+Anyway, all we have to do is check if both are 0, which is annoying but no big deal. To make it one microscopic bit faster, we could read effect as a u16, since param comes immediately after it. That way we could check both at once. Totally unimportant optimization, but I like optimizing annoying things to at least have some fun putting them in. I won't do it here, but if you do, be careful that effect is 16-bit aligned, or you'll accidentally get effect and whatever byte comes before it, due to the funky behavior of ARM processors with unaligned reads.<br><br>
+
+We'll also add two more variables to the MOD_CHANNEL structure to store the effect and param for updating mid-ticks:<br><br>
+
+<pre>typedef struct _MOD_CHANNEL
+{
+   u32 frequency;   // Current frequency of note being played, in Hz
+
+   u8 sample;       // Last sample used on this channel
+   u8 vol;          // Current volume
+
+   u8 effect;       // Current effect running (set to 0 on row tick if no effect/parameter)
+   u8 param;        // Current parameter (set to 0 row tick if no effect/parameter)
+
+} MOD_CHANNEL;</pre>
+
+There are still quite a few more variables left to add once we get started on coding the individual effects, but we'll get to those later.<br><br>
+
+So now all we need to do is modify MODProcessRow to call the effect function from the table, and handle update flags. Before that though, here's something that will make things easier later on. We'll need to initialize our MOD_UPDATE_VARS struct before we use it, so rather than going through and setting everything one at a time in code, we'll make a pre-set MOD_UPDATE_VARS struct in ROM to copy in. Actually 2 structs, one for row-ticks and one for mid-ticks:<br><br>
+
+<pre>static const MOD_UPDATE_VARS modDefaultVars[MOD_EFFECT_TABLE_NUM] =
+{
+   {   // MOD_EFFECT_TABLE_ROW
+      NULL,                       // modChn
+      NULL,                       // sndChn
+      MOD_NO_NOTE,                // note
+      MOD_NO_SAMPLE,              // sample
+      0,                          // effect
+      0,                          // param
+         // Play note if there is one, but still do nothing if there isn't.
+         // Don't set volume or frequency unless something specifically needs it.
+      MOD_UPD_FLG_PLAY_NOTE       // updateFlags
+   },
+   {   // MOD_EFFECT_TABLE_MID
+      NULL,                       // modChn
+      NULL,                       // sndChn
+      MOD_NO_NOTE,                // note
+      MOD_NO_SAMPLE,              // sample
+      0,                          // effect
+      0,                          // param
+         // Don't do anything unless something specifically needs it
+      0                           // updateFlags
+   }
+};</pre>
+
+Don't worry too much about these for now. updateFlags is the only one that really matters, since the others are overwritten anyway. This is so that every time I add a variable later on, I can just tell the initial values on row and mid ticks, and you'll know they go right into the table.<br><br>
+
+Here is the new MODProcessRow to handle updateFlags. <font color=#d0d0d0>Gray</font> is unchanged code (except for accessing vars struct instead of plain locals, which makes no difference), <font color=#90f090>green</font> is changed, but still the basic idea from before, and <font color=#ffffb0>yellow</font> is completely new code.<br><br>
+
+<pre><font color=#d0d0d0>static void MODProcessRow()
+{
+   s32 curChannel;
+
+   for(curChannel = 0; curChannel < SND_MAX_CHANNELS; curChannel++)
+   {</font><font color=#ffffb0>
+         // Quick initialization, with values for row-tick
+      MOD_UPDATE_VARS vars = modDefaultVars[MOD_EFFECT_TABLE_ROW];
+
+      vars.modChn = &sndMod.channel[curChannel];
+      vars.sndChn = &sndChannel[curChannel];</font><font color=#d0d0d0>
+
+         // Read in the pattern data, advancing rowPtr to the next channel in the process
+      vars.note   = *sndMod.rowPtr++;
+      vars.sample = *sndMod.rowPtr++;
+      vars.effect = *sndMod.rowPtr++;
+      vars.param  = *sndMod.rowPtr++;</font><font color=#ffffb0>
+
+         // Set these for the mid-ticks
+      vars.modChn->effect = vars.effect;
+      vars.modChn->param  = vars.param;
+
+         // Set sample and channel volume BEFORE effect processing, because 
+         // some effects read the sample from the MOD channel rather than vars, 
+         // and some need to override the default volume</font><font color=#90f090>
+      if(vars.sample != MOD_NO_SAMPLE)   // Never set local to memory anymore (explained below)</font><font color=#d0d0d0>
+      {
+            // Set sample memory
+         vars.modChn->sample         = vars.sample;
+         vars.modChn->vol            = sndMod.sample[vars.sample].vol;</font><font color=#90f090>
+            // Don't set mixer channel volume until after effect processing
+            //vars.sndChn->vol          = vars.modChn->vol;
+         vars.updateFlags            |= MOD_UPD_FLG_SET_VOL;</font><font color=#d0d0d0>
+      }</font><font color=#ffffb0>
+
+         // Effect 0 is arpeggio, but is also used as no-effect if the param is 0 too.
+         // This is where all effects do their work, the rest is just to support this one call.
+      if( (vars.effect != 0 || vars.param != 0) && 
+          (modEffectTable[MOD_EFFECT_TABLE_ROW][vars.effect] != NULL) )
+         (*modEffectTable[MOD_EFFECT_TABLE_ROW][vars.effect])(&vars);</font><font color=#90f090>
+
+         // MOD_UPD_FLG_PLAY_NOTE is set by default, so play the note if there 
+         // is one, and if MOD_UPD_FLG_PLAY_NOTE hasn't been specifically unset.
+      if( (vars.note != MOD_NO_NOTE) && 
+          (vars.updateFlags & MOD_UPD_FLG_PLAY_NOTE) )
+         MODPlayNote(&vars);</font><font color=#90f090>
+
+         // Set the mixer volume like the block above that handles new samples used to do
+      if(vars.updateFlags & MOD_UPD_FLG_SET_VOL)
+         vars.sndChn->vol = vars.modChn->vol;
+
+         // Like MODPlayNote used to do
+      if(vars.updateFlags & MOD_UPD_FLG_SET_FREQ)
+         vars.sndChn->inc = vars.modChn->frequency * sndVars.rcpMixFreq >> 16;</font><font color=#d0d0d0>
+   }
+}   // MODProcessRow</font></pre>
+
+This still accomplishes the same thing as the original version as long as none of those effects do anything, aside from that one little modification I made on the sample memory.<br>
+If you remember, I had it set the local 'sample' to the MOD channel's sample memory if there was no sample specified in the pattern. While this does work, I thought about it for a while and came to the conclusion that it's unnecessary. Anytime something wants to use the sample memory, it should do it explicitly. The local should also remain as being exactly what was loaded from the pattern data, to match the other locals.<br><br>
+
+The placement of the call to the effect functions here is very important. It's not too difficult to see here that the sample volume needs to be set before the call, and note playing needs to be done after, but what if we were writing an S3M or XM player? Not only do you have a lot more in general to think about, but you also have things like global volume running around causing trouble.<br>
+One problem that can come up in XM is if you mix volume envelopes and note delay. We already set the new sample and channel volume up above in the sample block, only skipped setting them on the mixer channel. This is fine for MOD because nothing else will need to change the mixer channel settings during the ticks until the note triggers, but volume envelopes still do need updating every tick, and do change the mixer channel volume. Since we overwrote the sample memory, we don't even know what volume envlope was being used anymore, not to mention the old note volume is gone too.<br>
+For any format other than MOD, I would recommend special-casing note delay to completely prevent processing of the channel until later. You'll need to save the note/sample/effect/param locals loaded from the pattern though, or maybe remember the location in the pattern that you loaded them from.<br><br>
+
+Moving on, next up in the code is MODPlayNote. For now there's only a couple of little differences, so here it is with the lengthy comments stripped out of the unchanged parts:<br><br>
+
+<pre><font color=#d0d0d0>static void MODPlayNote(MOD_UPDATE_VARS *vars)
+{
+   const SAMPLE_HEADER *sample;
+
+   if(vars->modChn->sample == MOD_NO_SAMPLE)
+   {
+      return;
+   }</font><font color=#90f090>
+
+      // This used to be local sample, but uses the sample memory now 
+      // because of that change earlier. Also, vars has pointers to 
+      // modChn and sndChn set up, so no need for the old locals
+   sample = &sndMod.sample[vars->modChn->sample];</font><font color=#d0d0d0>
+
+   vars->modChn->frequency  = noteFreqTable[sample->finetune*60 + vars->note];
+
+      // Set up the mixer channel
+   vars->sndChn->data       = sample->smpData;
+   vars->sndChn->pos        = 0;</font><font color=#90f090>
+      // Let update flags take care of setting the inc, just to recycle code 
+      // because it may also need to be set by effects without playing a note
+      //vars->sndChn->inc        = vars->modChn->frequency * sndVars.rcpMixFreq >> 16;
+   vars->updateFlags |= MOD_UPD_FLG_SET_FREQ;</font><font color=#d0d0d0>
+
+   vars->sndChn->length = (sample->loopLength != 0 ? 
+                              sample->loopStart + sample->loopLength : 
+                              sample->length) << 13;
+   vars->sndChn->loopLength = sample->loopLength << 13;
+
+}   // MODPlayNote</font></pre>
+
+Still accomplishes the same thing as before.<br><br>
+
+That does it for the row-ticks, so now we need to fill in that 'else' in MODUpdate, which says that we'll update effects there later. Well now we will, and it happens to look quite a lot like a stripped down MODProcessRow. Colored to show similarities to said function:<br><br>
+
+<pre><font color=#d0d0d0>static void MODUpdateEffects()
+{
+   s32 curChannel;
+
+   for(curChannel = 0; curChannel < SND_MAX_CHANNELS; curChannel++)
+   {</font><font color=#ffffb0>
+         // Bail if there's no effect to update
+      if( sndMod.channel[curChannel].effect != 0 || 
+          sndMod.channel[curChannel].param  != 0 )
+      {</font><font color=#90f090>
+            // Initialize with mid-tick values now
+         MOD_UPDATE_VARS vars = modDefaultVars[MOD_EFFECT_TABLE_MID];</font><font color=#d0d0d0>
+
+         vars.modChn = &sndMod.channel[curChannel];
+         vars.sndChn = &sndChannel[curChannel];</font><font color=#90f090>
+
+            // Already made sure there was an effect, so just check the function.
+            // Notice that we're using the mid-tick table now.
+         if(modEffectTable[MOD_EFFECT_TABLE_MID][vars.modChn->effect] != NULL)
+            (*modEffectTable[MOD_EFFECT_TABLE_MID][vars.modChn->effect])(&vars);</font><font color=#d0d0d0>
+
+         if( (vars.note != MOD_NO_NOTE) && 
+             (vars.updateFlags & MOD_UPD_FLG_PLAY_NOTE) )
+            MODPlayNote(&vars);
+
+         if(vars.updateFlags & MOD_UPD_FLG_SET_VOL)
+            vars.sndChn->vol = vars.modChn->vol;
+
+         if(vars.updateFlags & MOD_UPD_FLG_SET_FREQ)
+            vars.sndChn->inc = vars.modChn->frequency * sndVars.rcpMixFreq >> 16;
+      }
+   }
+}   // MODUpdateEffects</font></pre>
+
+As you can see here, those last 3 statements are exact replicas of what was in MODProcessRow, and therefore a waste of space. Chop, chop, put it in a function.<br><br>
+
+<pre>static void MODHandleUpdateFlags(MOD_UPDATE_VARS *vars)
+{
+   if( (vars->note != MOD_NO_NOTE) && 
+       (vars->updateFlags & MOD_UPD_FLG_PLAY_NOTE) )
+      MODPlayNote(vars);
+
+   if(vars->updateFlags & MOD_UPD_FLG_SET_VOL)
+      vars->sndChn->vol = vars->modChn->vol;
+
+   if(vars->updateFlags & MOD_UPD_FLG_SET_FREQ)
+      vars->sndChn->inc = vars->modChn->frequency * sndVars.rcpMixFreq >> 16;
+
+}   // MODHandleUpdateFlags</pre>
+
+Doesn't that make you feel all warm and fuzzy inside?<br><br>
+
+Guess what? That concludes the preparations. Now all that remains is writing a bunch of little functions, and cluttering our wonderful player with those few dreaded special-cases. Horror! But it will sound good.<br>
+Most of that will be taken care of next time, but in order to show the beauty of what we've set up, and to make the song sound much more like it's supposed to, we'll do one quick and easy effect first.<br><br><br><br>
+
+
+
+
+
+<a name=speed><font size="+1">Effect F: Speed and tempo</font><br>
+These two are actually one effect, just with a parameter that changes meaning depending on how high it is. Specifically, any value less than 32 is set speed, and anything greater or equal is set tempo.<br>
+This means that speed can never be higher than 31, and tempo can never be lower than 32. That's just how it is, and that's fine, because a song at tempo 32/speed 31 would only play a row about every 2.4 seconds.<br><br>
+
+All we have to do as programmers is check which side of 32 the parameter is on, and set the necessary variable.<br><br>
+
+<pre>static void MODFXSpeed(MOD_UPDATE_VARS *vars)
+{
+   if(vars->param < 32)             // 0-31 = set speed
+      sndMod.speed = vars->param;
+   else                             // 32-255 = set tempo
+      MODSetTempo(vars->param);
+}</pre>
+
+Now just put that into the function pointer table like so...
+<pre><font color=#d0d0d0>static const MOD_EFFECT_FUNC_PTR modEffectTable[MOD_EFFECT_TABLE_NUM][16] =
+{
+   {   // MOD_EFFECT_TABLE_ROW
+      NULL,          // 0x0: Arpeggio
+      ... still all NULL</font><font color=#90f090>
+      MODFXSpeed     // 0xF: Speed/Tempo</font><font color=#d0d0d0>
+   },
+   {   // MOD_EFFECT_TABLE_MID
+      NULL,          // 0x0: Arpeggio
+      ... these are still all NULL, including 0xF
+   }
+};</font></pre>
+
+...and voila, speed effects are handled.<br><br>
+
+So, you can probably get a good few of the effects implemented on your own at this point. Next time we'll burn through the easy ones just like speed/tempo here, and tackle the tricky ones as well. There'll also be crazy math fun, deriving a formula for pitch slides using only the old formula Hz=AMIGA_VAL/period, and the fact that newPeriod=oldPeriod+slide. See you there!<br><br>
+
+<a href="sound6.zip">Example project for Day 6 (11KB)</a><br><br>
+
+<center><b><a href="../index.html">Home</a>, <a href="sound5.html">Day 5</a>, <a href="sound7.html">Day 7</a></b></center>
+
+</body>
+
+</html>

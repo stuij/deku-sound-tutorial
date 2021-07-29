@@ -1,0 +1,396 @@
+<html>
+
+<head>
+<title>Sound Mixing - Deku's Tree of Art</title>
+</head>
+
+<body text=#ffffff link=#80ffff vlink=#80e0f0 bgcolor=#c09973 bg=graphics/bg.gif>
+<center><font size="+3" color=#604040><b>Sound on the Gameboy Advance</b></font><br><font size="+2" color = #4080c0>Day 3</font></center><br><br>
+
+I hope you brought a can of coding whup-ass, cause today we're going to tackle the inconspicuously difficult task of writing a tool to convert MOD files into a more usable format for a player on GBA.<br>
+While MOD is said to be one of the simplest of music formats, it has several hangups about it that make our lives more difficult than they need to be. I normally argue that Impulse Tracker is even easier (and every bit as functional) to write a player for, as long as you strip out most of the advanced features, but after further consideration, I would rather not expose you to the terror of writing a converter tool for it right offhand.<br>
+MOD is much nicer to those who are new to sound programming, if you can get over the little bumps of slightly scrambled-looking data. I will be going over the important parts here, but I suggest you pick up a file called fmoddoc.txt for reference, in the event that I leave out an important detail that gets you stuck. <a href="http://www.google.com/search?hl=en&ie=UTF-8&q=fmoddoc.txt">Google it, yo!</a><br><br>
+
+<a href="sound3.html#modfile">1. The MOD file</a><br>
+<a href="sound3.html#loading">2. Loading the data</a><br>
+<a href="sound3.html#samples">---Samples</a><br>
+<a href="sound3.html#orders">---Orders</a><br>
+<a href="sound3.html#patterns">---Patterns</a><br>
+<a href="sound3.html#smpdata">---Sample data</a><br>
+<br><br><br><br>
+
+
+
+<font size=+2><a name=modfile>1. The MOD file</font><br><br>
+
+Before you can play a song, you need to know what kind of data you're dealing with. It helps if you've written a MOD song before, or at least fiddled with a tracker at all. ModPlug Tracker is my favorite, so you may want to check that out if you've never seen how songs are organized.<br>
+First you have samples. These are just like .wav files, and can be any sort of sound you like. These are what we will be playing our music with, just by playing them at different frequencies to sound like different notes on a piano. In MOD, all samples are considered to have their default frequency set to 8363Hz, or sometimes 8287Hz. Minor discrepancy caused by the different VBlank rates of the NTSC and PAL Amiga computers that MOD files were originally played on... We will assume that our sounds are all 8363Hz, and leave it at that.<br><br>
+
+Songs are stored as a series of <i>patterns</i>, which are like a big list of notes, samples, and effects to be played. Patterns are layed out in <i>columns</i> and <i>rows</i>. Each column controls a different mixer channel. Since we have 4 mixer channels, we will have 4 columns.<br>
+There are 64 rows in each pattern, and each row you can specify a note, sample or effect to be procesed by the player. For now we will not worry about effects, because they are tricky, and not necessary just to get some notes playing.<br>
+Notes are named just like on a piano, with C-2 being 'normal' frequency. ModPlug calls C-5 middle, but really, it's supposed to be 2. No matter, because they don't have names in the actual MOD file anyway.<br>
+When you play a note, it stops any other note that was playing on the same channel, and starts the sample from the beginning. You can optionally specify a sample along with the note in the pattern. If you don't specify a sample, it will use whichever was used last on that channel. In most cases, samples and notes come in pairs.<br><br>
+
+Next, you need to know how to time things. There are 2 variables involved in this, <i>speed</i> and <i>tempo</i>. Tempo is frequency at which we update our song. It is measured in BPM, which is theoretically beats per minute, but it does't seem to really be. We'll just convert to Hz and forget about it. Here is the formula to convert BPM to Hz:<br><br>
+
+<pre>songFreq = tempo*2/5;</pre>
+
+We will ignore the fact that division is slow, because we won't be changing the tempo very often anyway. The default tempo for MOD is 125 BPM, so 125*2/5 becomes 50Hz, or 50 ticks per second.<br>
+Next we have speed. Speed is the number of ticks per row, and the default is 6. This means that rather than playing a new row 50 times per second, we wait 6 ticks, play a row, wait 6 more, play a row... effectively playing rows at 50/6 (about 8.3) times per second. Thus, with 64 rows per pattern, each pattern lasts about 8 seconds at the default speed.<br><br>
+
+One more level above patterns, you have orders. These are just what they sound like. They specify the order to play the patterns in. One nice thing about tracked music is that you can play the same pattern as many times as you want. This can save work and space by recycling parts of a song that get repeated more than once. Of course, you can just specify your orders like 1, 2, 3, 4, 5 and have one continuous song too.<br><br><br><br>
+
+
+
+<font size=+2><a name=loading>2. Loading the data</font><br><br>
+
+If you're going to make a sound system, sooner or later you're going to have to write yourself a tool to reformat the data into something more useful. MOD in particular would be very ugly to try to play directly from the files you have on your computer, and you would likely end up basically writing a converter in your GBA game to deal with it. Instead, we'll do it all up front so it doesn't slow things down when playing the game.<br><br>
+
+To begin with, we will open up a MOD file. I like DOS for this sort of stuff, so we'll do something like this:<br><br>
+
+<pre>	// pass in one filename from the command line
+zint main(int argc, char **argv)
+{
+	s32 i;
+	FILE *modFile;
+
+		// die if we didn't get a single argument (arg 0 is just the name 
+		// of the program, arg 1 is the first real argument, so we should have 2)
+	ASSERT(argc == 2);
+
+		// assume the first argument was a valid filename
+		// Note: "rb" means "read binary"
+	modFile = fopen(argv[1], "rb");
+		// die again if we couldn't open the file
+	ASSERT(modFile);
+
+		// we'll do stuff here in a minute
+
+	fclose(modFile);
+
+	return 0;
+}</pre>
+
+This also introduces a very handy thing, ASSERT. It is defined up top to be this:<br><br>
+
+<pre>#define ASSERT(cond)\
+	if((cond) == FALSE) { \
+		fprintf(stderr, "\nASSERT FAILED\n\t%s\n\tLine %i\n\n", __FILE__, __LINE__); \
+		getch(); \
+		exit(1); \
+	}</pre>
+
+This will simply tell you where the assert was called from, wait for you to press a key, and die. <br><br>
+
+The first thing you want to do when reading a MOD file is to make sure it's a valid MOD and that you know what to do with it. At position 1080, there is a 4-letter signature telling you what kind it is. A normal 4-channel MOD should have the signature "M.K.". There are also signatures like "6CHN" and "8CHN", specifying the number of channels. How you handle these is your own choice. I first check for "M.K.", and if it's different, check if the last 3 chars are "CHN", and if so, then read the first char as the number of channels. For now, we will bail out if we don't have 4 channels, so only accept "M.K." or "4CHN".<br><br>
+
+After that, we'll start from the start of the file and load everything in order. The first 20 bytes are the song title. Any letters past the end of the name are set to NULL, but you are allowed to use all 20, giving you a non-NULL terminated string. You can either make your name variable 21 chars and set the last to NULL, or just set name[19] to NULL, overwriting the last letter if somebody made a name that long. This would also be a good place to create a new structure to store all our song data:<br><br>
+
+<pre>typedef struct _MOD_HEADER
+{
+   char name[20];
+
+} MOD_HEADER;</pre>
+
+Then back down after the sig checking:<br><br>
+
+<pre>fseek(modFile, 0, SEEK_SET);
+fread(modHeader.name, 20, 1, modFile);
+modHeader.name[19] = '\0';	// chop that last letter, incase it's not already NULL</pre>
+
+<a name=samples><font size="+1">Samples</font><br>
+Immediately following the name is the sample information. This does not contain the actual wave data, only the length/loop positions/etc. There are always 31 samples stored, wether that many are used or not. The data is layed out like this:<br><br>
+
+<pre>22 bytes - Name
+2 bytes  - Length
+1 byte   - Fine tune
+1 byte   - Volume
+2 bytes  - Loop start
+2 bytes  - Loop length</pre>
+
+However, those 2-byte values (length, loop start and loop length) are stored in a funky way. You have to convert them like this:<br><br>
+
+<pre>realVal = ((byte0<<8) | byte1) * 2;</pre>
+
+Swap the bytes, and then multiply by 2. However, the multiply by 2 will overflow 16 bits if the real length, for example, is greater than 65535 bytes. For now, we'll only swap the bytes, and do the *2 in our music player later.<br>
+Here, you will need to create a sample structure to store the data. Something like this:<br><br>
+
+<pre>typedef struct _SAMPLE_HEADER
+{
+   char name[22];
+   u16  length;
+   u8   finetune;   // This will be explained when writing the music player
+   u8   vol;
+   u16  loopStart;
+   u16  loopLength;
+
+   s8   *smpData;   // This is stored at the end of the file and will be loaded later
+
+} SAMPLE_HEADER;</pre>
+
+We'll add an array of these to our header structure, load the samples, and swap the necessary bytes:<br><br>
+
+<pre>typedef struct _MOD_HEADER
+{
+   char name[20];
+   SAMPLE_HEADER sample[31];
+
+} MOD_HEADER;
+
+/////////// Down in main:
+
+for(i = 0; i < 31; i++)
+{
+   fread(&modHeader.sample[i], sizeof(SAMPLE_HEADER), 1, modFile);
+   modHeader[i].smpData = NULL;   // Nothing for now, will load later
+
+   modHeader.sample[i].length =     ( ((modHeader.sample[i].length & 0xff) << 8) | 
+                                       (modHeader.sample[i].length >> 8) );
+
+   modHeader.sample[i].loopStart =  ( ((modHeader.sample[i].loopStart & 0xff) << 8) | 
+                                       (modHeader.sample[i].loopStart >> 8) );
+
+   modHeader.sample[i].loopLength = ( ((modHeader.sample[i].loopLength & 0xff) << 8) | 
+                                       (modHeader.sample[i].loopLength >> 8) );
+}</pre>
+
+<a name=orders><font size="+1">Orders</font><br>
+After samples comes orders. The first byte is the number of orders in the song, followed by an unused byte. After that is a straight 128 byte array of which patterns to play. The length byte from before tells how many of these are actually used.<br>
+We'll add these into the header as well, and then load them.<br><br>
+
+<pre>typedef struct _MOD_HEADER
+{
+   char name[20];
+   SAMPLE_HEADER sample[31];
+   u8 order[128];
+   u8 orderCount;
+
+} MOD_HEADER;
+
+//////////// Down in main:
+
+fread(&modHeader.orderCount, 1, 1, modFile);
+
+u8 trash;
+fread(&trash, 1, 1, modFile);
+
+fread(modHeader.order, 128, 1, modFile);</pre>
+
+Nothing to it. Next we need to find out how many patterns to load. For some odd reason, whoever designed the file format decided not to include this anywhere, but at the same time included a totally wasted byte in the last section. So, we have to search through the orders and find the highest pattern used for ourselves.<br><br>
+
+<pre>u8 highestPattern = 0;
+
+for(i = 0; i < modHeader.orderCount; i++)
+{
+   if(modHeader.order[i] > highestPattern)
+      highestPattern = modHeader.order[i];
+}
+
+   // we only found the highest pattern used, the number of them is one higher than that
+modHeader.patternCount = highestPattern + 1;</pre>
+
+Notice that I just added another variable, patternCount, to the MOD_HEADER struct.<br>
+Next, we will load the patterns themselves. But before that, we happen to be right back where we started, position 1080, where the signature is (that "M.K." thing). No need to read it again, so just jump over it.<br><br>
+
+<a name=patterns><font size="+1">Patterns</font><br>
+These are pretty tricky, but they're completely uncompressed here, which makes them far easier to understand than most formats. The S3M/XM/IT formats all encode their patterns in different ways to save space, and in fact, we will probably be encoding the MOD patterns ourselves later on, but for now, we'll keep them uncompressed. Even so, we have to make some modifications to the data for our player to use.<br><br>
+
+Pattern data it stored somewhat like a bitmap. Since we have 4 channels, it will be 4 columns wide. Since all MOD patterns have 64 rows, it is 64 rows tall, so sort of a 4x64 array. Each cell is 4 bytes, so the size of the whole pattern is 4*64*4, or 1024, which is 1KB.<br>
+Now here is why we want to reformat the data for our player. Each cell constains 4 fields, a 12-bit <i>period</i> value, an 8-bit sample number, a 4-bit effect type, and an 8-bit effect parameter. Now, you could organize these in a fairly simple way by storing the byte values on byte boundaries, and just tacking the 4-bit one onto the top of the 12-bit one. But no, it's a hideous mess, and we have to unscramble it. Here is how they are layed out:<br><br>
+
+<pre>   byte0    byte1     byte2    byte3
+---------- -------- -------- ----------
+| PPPPSSSS pppppppp EEEEssss FFFFFFFF |
+---------- -------- -------- ----------
+bit0.....7,0......7,0......7,0......7
+
+Sample:    ssssSSSS
+Period:    ppppppppPPPP
+Effect:    EEEE
+Parameter: FFFFFFFF</pre>
+
+Taken from fmoddoc.txt, and rewritten in a way that I think makes it easier to understand (going from lowest bit to highest bit as you read left to right). If this looks backward to you, read the fmoddoc.txt one instead.<br>
+Now all we have to do now is shift those around to put them together like that. It should look something like this:<br><br>
+
+<pre>u8 cell[4];
+u8 sample;
+u16 period;
+u8 effect;
+u8 param;
+
+fread(cell, 4, 1, modFile);
+
+sample = (cell[2] >> 4) | (cell[0] & 0xF0);
+period = cell[1] | ((cell[0] & 0xF) << 8);
+effect = cell[2] & 0xF;
+param  = cell[3];</pre>
+
+Now we have some data that we can actually use. But first, you must be wondering what that period value is. That's what specifies what frequency the sample will be played at. It's related to the Amiga's VBlank rate, and so makes little sense to us GBA people. Here is the formula to convert from amiga period to Hz:<br><br>
+
+<pre>frequency = 7159090.5 / (period * 2);</pre>
+
+We are not going to use periods at all, because they are a waste of space. Instead, we will convert them to note numbers, and use a lookup table of frequencies for each note. To do this, we need a table of period values for each note. Fortunately, fmoddoc.txt supplies one:<br><br>
+
+<pre>	dc.w 856,808,762,720,678,640,604,570,538,508,480,453 ; C-1 to B-1
+	dc.w 428,404,381,360,339,320,302,285,269,254,240,226 ; C-2 to B-2
+	dc.w 214,202,190,180,170,160,151,143,135,127,120,113 ; C-3 to B-3</pre>
+
+So, right there you can see that the period for C-2, middle C, is 428. Let's run this through our formula and see what we get:<br><br>
+
+<pre>frequency = 7159090.5 / (428 * 2);
+frequency = 8363.42;</pre>
+
+Remember earlier I said 8363 is the default frequency for all samples? This right here proves it.<br>
+Traditionally, MOD only has 3 octaves. However, because the period field is 12 bits, there's no reason not to allow more. As you can see from the table, the period of octave 1 is twice that of octave 2. C-2 is 428, and C-1 is 856. If you go down to C-0, you multiply it by 2 again and get 1712. This still fits in 4 bits, so it's ok. ModPlug actually lets you do this, so we'll include support for it. Theoretically there's not much limit to how high pitched you can go, but as you go higher, the periods get smaller, meaning you have less and less accuracy. ModPlug lets you go up to B-4, so that's what we'll do too.<br>
+Next, we have to decide how to go about doing this. If you look closely at the table, you'll see that some values in fact DON'T match up to exactly 2x eachother. For example, B-1 and B-2. B-2 is 226, and B-1 is 453. But 226*2 is 452. We will take octave 1 and calculate everything else based on it, because it has the highest accuracy to begin with.<br><br>
+
+Once we have a full 5-octave table, we need to compare the periods of the notes in the pattern to it to decide what the note number should be. We'll declare note 0 to be C-0, note 1 to be C#0, note 2 D-0, etc., then note 12 is C-1, note 24 is C-2, all the way up to 59 being B-4. As you can see, our new note number only requires 6 bits to store, instead of the 12 in the original format.<br>
+So we'll start off by creating the full period table:<br><br>
+
+<pre>const u16 octave1Period[12] = {
+      // this is the first row of the table from before
+   856,808,762,720,678,640,604,570,538,508,480,453   // C-1 to B-1
+};
+
+   // 5 octaves' worth of space
+u16 periodTable[12*5];
+u8 octave, note;
+
+for(octave = 0; octave < 5; octave++)
+{
+   for(note = 0; note < 12; note++)
+   {
+         // *2 to get us into octave 0, then divide by 2 for each octave up from there
+      periodTable[octave*12 + note] = (octave1Period[note]*2) >> octave;
+   }
+}</pre>
+
+Now we have a table of period values to compare our notes to.<br>
+Before we start converting our pattern data, we need to know how we plan to store it. Our note values will take 6 bits as we saw before.<br>
+The sample number, while stored as a byte originally, only needs 5 bits. MOD files only support 31 samples, so no need to waste those extra 3 bits storing it as a byte.<br>
+The effect and parameter use all their bits, so we'll keep them like they are (4 bits and 8 bits respectively). So, this comes out to 6+5+4+8 = 23 bits. We just chopped a byte off each cell in our pattern, so the total size of each pattern is now only 768 bytes, rather than 1024. The question though, is wether this savings is worth a little extra complexity. When you look at how the information will have to be stored, it will be something like this:<br><br>
+
+<pre>   byte0    byte1     byte2  
+---------- -------- ----------
+| NNNNNNss SSSxEEEE FFFFFFFF |
+---------- -------- ----------
+bit0.....7,0......7,0......7
+
+Note:   NNNNNN
+Sample: ssSSS
+Effect: EEEE
+Param:  FFFFFFFF
+x: unused</pre>
+
+As you can see, the note, effect and parameter are easy enough to extract, but the sample number is spread over 2 bytes. This would not be a problem if we could just load those 2 bytes, shift the sample field down, and mask off the data above it. However, because the whole field is 3 bytes, we will no longer have any guaranteed power-of-two alignment, so we can only read single bytes at a time. We can still extract all the necessary information, it would just make our code a little ugly. For now, we will go the easy route and store each field as a whole byte, like this:<br><br>
+
+<pre>   byte0    byte1     byte2    byte3
+---------- -------- -------- ----------
+| NNNNNNxx SSSSSxxx EEEExxxx FFFFFFFF |
+---------- -------- -------- ----------
+bit0.....7,0......7,0......7,0......7
+</pre>
+
+Much nicer. However, now that we have word alignment back, it would be easy to extract the packed values, but it would be a waste of time when we can load them seperately to begin with. Sad.<br><br>
+
+Now we will add another variable to MOD_HEADER, and convert all the patterns to our new format:<br><br>
+
+<pre>typedef struct _MOD_HEADER
+{
+   char name[20];
+   SAMPLE_HEADER sample[31];
+   u8 order[128];
+   u8 **pattern;
+   u8 orderCount;
+   u8 patternCount;
+
+} MOD_HEADER;
+
+//////////// Down in main:
+
+modHeader.pattern = new u8*[modHeader.patternCount];
+ASSERT( modHeader.pattern );   // handle running out of memory
+   // Initialize the memory to 0
+memset( modHeader.pattern, 0, modHeader.patternCount*sizeof(u8*) );
+
+u8 curPattern, row, column;
+
+for(curPattern = 0; curPattern < modHeader.patternCount; curPattern++);
+{
+      // Allocate the memory for our new pattern (they are always 1K)
+   modHeader.pattern[curPattern] = new u8[1024];
+   ASSERT( modHeader.pattern[curPattern] );   // handle running out of memory
+   memset( modHeader.pattern[curPattern], 0, 1024);   // initialize to 0
+
+   for(row = 0; row < 64; row++)
+   {
+      for(column = 0; column < 4; column++)
+      {
+///////////////////////////// Copy our bit of code from earlier
+         u8 cell[4];
+         u8 sample;
+         u16 period;
+         u8 effect;
+         u8 param;
+
+         fread(cell, 4, 1, modFile);
+
+         sample = (cell[0] & 0xF0) | (cell[2] >> 4);
+         period = cell[1] | ((cell[0] & 0xF) << 8);
+         effect = cell[2] & 0xF;
+         param  = cell[3];
+//////////////////////////// end copied code
+
+            // Now we'll loop through our note period table and find the closest match
+         u8 closestNote = 0;
+         u16 closestDist = 0xffff;   // make sure the first comparison sets the closest note
+
+         for(i = 0; i < 12*5; i++)   // 5 octaves, 12 notes each
+         {
+            u16 newDist = abs( period - periodTable[i] );
+            if(newDist < closestDist)
+            {
+               closestNote = i;
+               closestDist = newDist;
+            }
+         }
+
+            // Now that we have our note, we can store the data in our new pattern
+            // Calculate the address of the cell to output to
+            // rowOffset = row * 4 columns per row * 4 bytes per cell
+            // columnOffset = column * 4 bytes per cell
+         u8 *outCell = &modHeader.pattern[curPattern][row*4*4 + column*4];
+         outCell[0] = closestNote;
+         outCell[1] = sample;
+         outCell[2] = effect;
+         outCell[3] = param;
+      }
+   }
+}</pre>
+
+<a name=smpdata><font size="+1">Sample data</font><br>
+Following the pattern data is the sample data. This is the raw wave data that we never loaded before. These are layed out one after another like patterns. The length of each one is stored in the sample structs that we loaded earlier. The wave data is signed 8-bit, which is what our mixer uses, so all we have to do is load it like it is. One point though, we need to remember that our length variable is stored as half of the real length, because they wanted to allow samples > 64KB, and we didn't want to waste 2 bytes per sample making it a u32 just for one more bit.<br><br>
+
+<pre>for(i = 0; i < 31; i++)
+{
+      // Compute the real length in bytes
+   u32 realLength = ((u32)modHeader.sample[i].length) * 2;
+
+   if(realLength != 0)
+   {
+      modHeader.sample[i].smpData = new s8[realLength];
+      ASSERT(modHeader.sample[i].smpData != NULL);
+
+      fread(modHeader.sample[i].smpData, realLength, 1, modFile);
+   }
+}</pre>
+
+So, there you have it. We now have the entire MOD loaded and ready to output. However, there's one small problem. This is only one MOD, and we want to load a whole bunch of them, and remove duplicate samples and such. This will be resolved next time in day 4 of the series when we finish up the converter program.<br><br>
+
+Today turned out to be a horrible mess just to load in a MOD file, and I kind of regret spending so much time on it when fmoddoc.txt explains pretty much everything I just did in significantly less space. Oh well, what's done is done and we must forage ahead.<br><br>
+
+<center><b><a href="../index.html">Home</a>, <a href="sound2.html">Day 2</a>, <a href="sound4.html">Day 4</a></b></center>
+
+</body>
+
+</html>

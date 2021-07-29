@@ -1,0 +1,317 @@
+<html>
+
+<head>
+<title>Sound Mixing - Deku's Tree of Art</title>
+</head>
+
+<body text=#ffffff link=#80ffff vlink=#80e0f0 bgcolor=#c09973 bg=graphics/bg.gif>
+<center><font size="+3" color=#604040><b>Sound on the Gameboy Advance</b></font><br><font size="+2" color = #4080c0>Day 7</font></center><br><br>
+
+Last time we set up a nice base for effects, but unfortunately, I ran into a number of bugs and miscalculations while finishing things up and actually listening to some songs on it.<br>
+I also forgot that I never added any real functions for playing SFX, and because this issue got so long by the time I finished writing it, I decided to once again split it up. Today will only be fixing the bugs and adding the SFX functions. Tomorrow will be pure effects.<br><br>
+
+So. Bugs. It looks like having all our frequencies in Hz just won't cut it. It's close, but my picky ears can tell the difference. So, we'll have to go with true MOD periods all the way until the final conversion to an increment value for the mixer channel.<br><br>
+
+Secondly, on a couple of my favorite MODs that use huge guitar samples, they kept getting cut off by later notes when they were supposed to go a bit longer. That's because our song tempo is only calculated to the nearest whole sample, and with hundreds of samples running by every tick, the error can build up to be quite noticable for those megasamples that last for several seconds. To fix it, we'll make samplesPerMODTick into a fixed-point number. Pretty easy.<br><br>
+
+Thirdly, I wrote a memset function in Misc.c, because with optimizations on, the modDefaultVars initializer structs were trying to call it since most of the struct is cleared to 0. Sad, because the main point of those was to talk the compiler into doing a ldmia/stmia pair to make it nice and fast, and instead it wants to do a whole function call. Talk about optimization.<br>
+Also used the memset to clear the main MOD struct to 0 first in MODPlay, because uninitialized memory is the devil.<br><br>
+
+Fourthly, I discovered a weird quirk in the MOD format. Appearently, the loop length for a sample can be non-zero, but it's still considered to be non-looping. From trial and error in MODPlug tracker, it seems that a length of 4 or less is just ignored and treated as 0. Must be fixed in the converter.<br>
+One more little converter bug, 0-length samples have their data index set to 0xffffffff to flag that it's not there, but I forgot to handle that when printing out the sample data pointer to use in the .c file, so it would just print dSmpData-1, which of course won't compile.<br><br>
+
+<a href="sound7.html#periods">1. Switching to periods</a><br>
+<a href="sound7.html#timing">2. Fixed-point tick timing</a><br>
+<a href="sound7.html#looplen">3. The loop length quirk and 0-length samples</a><br>
+<a href="sound7.html#sfx">4. Sound effects</a><br>
+<a href="sound7.html#mod">5. Reorganized MOD functions</a><br><br>
+
+<a href="sound7.zip">Example project (160KB)</a> (includes everything, don't overlay on old ones)<br><br><br><br>
+
+
+
+<font size=+2><a name=periods>1. Switching to periods</font><br><br>
+
+Because Hz turned out to be a little too inaccurate in the end, we have to convert everything over to use periods. A hassle, but luckily the converter just spits out note numbers anyway so it's pretty easy. All we have to do is generate a new lookup table of period values instead of Hz, and then change how we calculate the mixer channel increment.<br><br>
+
+First thing is to generate the table. Here was our old frequency table generator:<br><br>
+
+<pre>for(finetune = 0; finetune < 16; finetune++)
+{
+   for(octave = 0; octave < 5; octave++)
+   {
+      for(note = 0; note < 12; note++)
+      {
+            // Calculate the period of this note in this octave. First multiply by 2 
+            // to get into octave 0, then divide by 2 for each octave up from there
+         u16 tempPeriod = (periodTable[finetune][note]*2) >> octave;
+            // And plug it into our period->Hz formula
+         u32 tempFreq   = (AMIGA_VAL / tempPeriod);
+
+            // Clip to 16 bits, because only the highest notes on the 
+            // highest finetunes will overflow it, and they're not worth 
+            // using u32's and doubling the size of the table
+         if(tempFreq > 65535)
+            tempFreq = 65535;
+
+         freqTable[finetune*12*5 + octave*12 + note] = (u16)tempFreq;
+      }
+   }
+}</pre>
+
+Ahh, life can be good sometimes. We already have a tempPeriod variable, all we have to do is rip out all that frequency stuff and set the table value to tempPeriod instead of tempFreq. Plug the generated table into the player, and when this happens in MODPlayNote:<br><br>
+
+<pre>vars->modChn->frequency = noteFreqTable[vars->finetune*60 + vars->note];</pre>
+
+vars->modChn->frequency is now actually in periods, no change necessary. The only change is in MODHandleUpdateFlags, this bit:<br><br>
+
+<pre>if(vars->updateFlags & MOD_UPD_FLG_SET_FREQ)
+   vars->sndChn->inc = vars->modChn->frequency * sndVars.rcpMixFreq >> 16;</pre>
+
+Periods are like the reciprocal of frequency, meaning that instead of channelFreq / mixFreq, we now need to do mixPeriod / channelPeriod (shifting up by 12 bits first, of course). Sadly, we can't precompute the reciprocal of the channel period, so we must accept our fate and to do a real, slow divide. Actually the longest period we'll ever use is 1814 (C-0, finetune -8), so we could make a lookup table of such length, but I don't feel like it :-P<br>
+So, we'll scrap the sndVars.rcpMixFreq variable and add sndVars.mixFreqPeriod, which will be AMIGA_VAL/mixFreq. Because periods lose more accuracy the higher pitch you go, we'll do the 12 bit shift-up before dividing AMIGA_VAL, so we can keep a bit more accuracy.<br>
+Actually AMIGA_VAL (3579545) is too big to shift up 12 bits, but we can still shift up by 9 and fit in a 32-bit signed number, and then shift the result up by the remaining 3 bits. So, here is the result:<br><br>
+
+<pre><font color=#d0d0d0>typedef struct _SOUND_VARS
+{
+   ...</font><font color=#ff0000>
+   // u16      rcpMixFreq;   // Removed</font><font color=#ffffb0>
+   u32      mixFreqPeriod;   // Added</font><font color=#d0d0d0>
+   ...
+} SOUND_VARS;
+
+void SndInit(SND_FREQ freq)
+{
+   ...</font><font color=#ffffb0>
+   sndVars.mixFreqPeriod = div(AMIGA_VAL<<9, sndVars.mixFreq) << 3;</font><font color=#d0d0d0>
+   ...
+}</font></pre>
+
+And then back down in MODHandleUpdateFlags...<br><br>
+
+<pre><font color=#d0d0d0>if(vars->updateFlags & MOD_UPD_FLG_SET_FREQ)</font><font color=#90f090>
+   vars->sndChn->inc = div(sndVars.mixFreqPeriod, vars->modChn->frequency);</font></pre>
+
+That ought to do it. Then for correctness, we'll fix the names of everything so modChn->frequency is modChn->period, and noteFreqTable is notePeriodTable. Just search-and-replace.<br><br><br><br>
+
+
+
+<font size=+2><a name=timing>2. Fixed-point tick timing</font><br><br>
+
+Now we'll make the song timing even more accurate than nearest-sample. 8-bit fixed would probably be plenty, but may as well go with 12-bit. Here is SndUpdate with the necessary changes made, and explained in comments:<br><br>
+
+<pre><font color=#d0d0d0>void SndUpdate()
+{
+   s32 samplesLeft = 304;
+   while(samplesLeft > 0)
+   {</font><font color=#90f090>
+         // Used to check if equal to 0, now we have to go for inbetween 0 and 1 too
+      if(sndVars.samplesUntilMODTick < (1<<12))</font><font color=#d0d0d0>
+      {
+         MODUpdate();</font><font color=#90f090>
+            // Instead of just setting this to sndVars.samplesPerMODTick, 
+            // add it, so as not to lose the fractional portion
+         sndVars.samplesUntilMODTick += sndVars.samplesPerMODTick;</font><font color=#d0d0d0>
+      }</font><font color=#90f090>
+         // Gotta shift down, samplesLeft is an integer
+      if((sndVars.samplesUntilMODTick>>12) < samplesLeft)</font><font color=#d0d0d0>
+      {</font><font color=#90f090>
+            // SndMix also takes an integer
+         SndMix(sndVars.samplesUntilMODTick>>12);
+            // Again, integer
+         samplesLeft -= sndVars.samplesUntilMODTick>>12;
+            // We only mixed the integer version's worth of samples, but have to shift 
+            // that integer back up before subtracting it. This could also be done 
+            // more confusingly with &= 4095
+         sndVars.samplesUntilMODTick -= (sndVars.samplesUntilMODTick>>12)<<12;</font><font color=#d0d0d0>
+      }
+      else
+      {
+         SndMix(samplesLeft);</font><font color=#90f090>
+         sndVars.samplesUntilMODTick -= samplesLeft<<12;</font><font color=#d0d0d0>
+         samplesLeft = 0;
+      }
+   }
+}</font></pre>
+
+And when actually calculating samplesPerMODTick down in MODSetTempo, we used to first calculate the MOD frequency by tempo*2/5, and then divide the mixing frequency by that for samplesPerMODTick. That *2/5 is a horrible loss of accuracy, and a pointless division too. We'll use our algebra skills to calculate samplesPerMODTick straight from the tempo and mixing frequecy:<br><br>
+
+<pre>modFreq = tempo*2/5
+samplesPerMODTick = mixFreq / modFreq
+
+samplesPerMODTick = mixFreq / (tempo*2/5)
+samplesPerMODTick = (mixFreq*5) / (tempo*2)</pre>
+
+And because we want it in 12-bit fixed-point...<br><br>
+
+<pre>samplesPerMODTick = (mixFreq*5<<12) / (tempo*2)</pre>
+
+Much better. Also note that samplesPerMODTick and samplesUntilMODTick used to be 16-bit variables, now they need to be 32-bit.<br>
+That concludes the fixings. Everything should be in very good tune now.<br><br><br><br>
+
+
+
+<font size=+2><a name=looplen>3. The loop length quirk and 0-length samples</font><br><br>
+
+As mentioned up top, we need to ignore any loop lengths less than or equal to 4, or some samples will sound like they're not there at all, just looping on the first couple of values. It's a very easy change in the converter:<br><br>
+
+<pre><font color=#ffffb0>#define SMP_LOOPLENGTH_THRESHOLD   4</font><font color=#d0d0d0>
+
+void LoadSamples(MOD_HEADER *modHeader, FILE *modFile)
+{
+   s32 i;
+   for(i = 0; i < 31; i++)
+   {
+      SAMPLE_HEADER *smp = &modHeader->sample[i];
+      fread(smp, 30, 1, modFile);
+      smp->smpDataIdx = INVALID_SMP_DATA;   // Nothing for now, will load later
+
+      smp->length =     ( ((smp->length & 0xff) << 8) | 
+                           (smp->length >> 8) );
+      smp->loopStart =  ( ((smp->loopStart & 0xff) << 8) | 
+                           (smp->loopStart >> 8) );
+      smp->loopLength = ( ((smp->loopLength & 0xff) << 8) | 
+                           (smp->loopLength >> 8) );</font><font color=#ffffb0>
+      if(smp->loopLength <= SMP_LOOPLENGTH_THRESHOLD)
+         smp->loopLength = 0;</font><font color=#d0d0d0>
+   }
+}   // LoadSamples</font></pre>
+
+Then to fix the sample data printing bug, just set the sample data to NULL if it's not there:<br><br>
+
+<pre><font color=#d0d0d0>   ...
+   fprintf(outFile, "\nconst SAMPLE_HEADER dMod%iSmpTable[] = {", curMod);
+   for(i = 0; i < sampleCount; i++)
+   {</font><font color=#90f090>
+      fprintf(outFile, "\n\t{ %i, %i, %i, %i, %i, ", 
+              globals.modHeader[curMod].sample[i].length, 
+              globals.modHeader[curMod].sample[i].finetune, 
+              globals.modHeader[curMod].sample[i].vol, 
+              globals.modHeader[curMod].sample[i].loopStart, 
+              globals.modHeader[curMod].sample[i].loopLength);</font><font color=#ffffb0>
+
+      if (globals.modHeader[curMod].sample[i].smpDataIdx != INVALID_SMP_DATA)
+         fprintf(outFile, "dSmpData%i }, ", 
+                 globals.modHeader[curMod].sample[i].smpDataIdx);
+      else
+         fprintf(outFile, "NULL }, ");</font><font color=#d0d0d0>
+   }
+   fprintf(outFile, "\n};\n");
+   ...</font></pre><br><br>
+
+
+
+<font size=+2><a name=sfx>4. Sound effects</font><br><br>
+
+Now for something that really matters, adding some functions to play sound effects.<br>
+We'll add 2 functions, SndPlaySFX, and SndStopSFX. We still only have 4 channels to play things on though, so we'll have to take one of them away from the song, and tell the song not to play anything on it until the sound effect is over. For this, SOUND_VARS will get a new variable, channelBlocked, which has a bit for each channel. Say a sound effect is playing on channel 2, then bit2 of it will be set (that is, channelBlocked&(1<<2) is non-zero). Since the only place the MOD ever modifies the mixer channel is in MODHandleUpdateFlags, we can check this bitmask before calling said function.<br><br>
+
+<pre><font color=#d0d0d0>typedef struct _SOUND_VARS
+{
+   ...</font><font color=#ffffb0>
+   u8 channelBlocked;   // One bit per mixer channel</font><font color=#d0d0d0>
+} SOUND_VARS;</font></pre>
+
+And in both MODProcessRow and MODUpdateEffects:<br><br>
+
+<pre><font color=#d0d0d0>   for(curChannel = 0; curChannel < SND_MAX_CHANNELS; curChannel++)
+   {
+      ...</font><font color=#90f090>
+      if( !(sndVars.channelBlocked & (1&lt;&lt;curChannel)) )
+         MODHandleUpdateFlags(&vars);</font><font color=#d0d0d0>
+   }</font></pre>
+
+So now the MOD will still process everything (so the sample memory and such will be up to date, and any global effects like set speed won't get missed), only the parts that actually affect the mixer channel are skipped. All we have to do to claim a channel is set its bit in channelBlocked, and the MOD won't touch it. Then we can set up all of its parameters to play the sound effect:<br><br>
+
+<pre>void SndPlaySFX(u32 sfxIdx, u32 channel)
+{
+   const SAMPLE_HEADER *sfxHeader = &dSfxTable[sfxIdx];
+   SOUND_CHANNEL       *sndChn    = &sndChannel[channel];
+
+   sndVars.channelBlocked |= (1&lt;&lt;channel);
+   sndChn->data           = sfxHeader->smpData;
+   sndChn->pos            = 0;
+   sndChn->inc            = div(sndVars.mixFreqPeriod, 428);
+   sndChn->length         = sfxHeader->length << 1;
+   sndChn->loopLength     = sfxHeader->loopLength << 1;
+   sndChn->vol            = sfxHeader->vol;
+}</pre>
+
+The 428 there to calculate the increment is the MOD period for C-2, or middle-C (remember, mixFreqPeriod is already 12-bit fixed-point, so no need to shift it up here). If you want, you could add a period parameter to the function so you can change the pitch, or a note number to look up in the notePeriodTable (maybe taking the sfxHeader's finetune into account for correctness).<br>
+Either that, or if you'd prefer to specify the frequency instead of period, you could use the Hz formula to calculate the increment:<br><br>
+
+<pre>   sndChn->inc = div((sfxFreq<<12), sndVars.mixFreq);</pre>
+
+Lots of different ways to go about it, but for simplicity I'm keeping it locked at the original pitch.<br><br>
+
+Stopping the sound is just a matter of nulling the channel's data pointer and clearing the blocked flag. We'll also check to make sure there was really a sound effect playing on it first, just for good measure:<br><br>
+
+<pre>void SndStopSFX(u32 channel)
+{
+   if(sndVars.channelBlocked & (1&lt;&lt;channel))
+   {
+      sndChannel[channel].data = NULL;
+      sndVars.channelBlocked &= ~(1&lt;&lt;channel);
+   }
+}</pre>
+
+You just need to remember which channel you played it on.<br><br>
+
+Then to make it easier to use, we'll add a version that only takes the SFX index, and finds an available channel on its own. There are plenty of ways to decide which channel would be best to play it on (checking for one that's not playing at all, taking the one with the lowest volume, etc.), but we'll just search from the last to the first until we find one that doesn't already have a sound effect on it, or return an invalid marker if there aren't any available.<br>
+SndStopSFX will need to check for that invalid marker just incase it gets passed in.<br><br>
+
+Since this version will probably be called the most often, we'll give it the name SndPlaySFX, and call the original one that lets you specify the channel SndPlaySFXChn. The result:<br><br>
+
+<pre>#define SND_CHN_INVALID   0xff
+
+u32 SndPlaySFX(u32 sfxIdx)
+{
+   s32 channel = SND_MAX_CHANNELS-1;   // Since we have 4 channels, this is 3
+
+   while( (channel >= 0) && (sndVars.channelBlocked & (1&lt;&lt;channel)) )
+      channel--;
+
+   if(channel >= 0)
+   {
+      SndPlaySFXChn(sfxIdx, channel);
+      return channel;   // Game code can use this so it knows which channel to stop
+   }
+   else   // No free channels (decremented until it went below 0)
+   {
+      return SND_CHN_INVALID;
+   }
+}
+
+void SndStopSFX(u32 channel)
+{
+   if( (channel != SND_CHN_INVALID) && 
+       (sndVars.channelBlocked & (1&lt;&lt;channel)) )
+   {
+      sndChannel[channel].data = NULL;
+      sndVars.channelBlocked &= ~(1&lt;&lt;channel);
+   }
+}</pre>
+
+And that's about it. Lots more things you can add though, like functions to set the frequency/volume during playback, functions to pause sounds, maybe even some special code to play a sound effect on the other hardware channel (since we're only using one for mono).<br><br><br><br>
+
+
+
+<font size=+2><a name=mod>5. Reorganized MOD functions</font><br><br>
+
+I also reorganized the MOD playing functions a bit, so now SndPlayMOD and SndStopMOD are just wrappers and the main code is in MODPlay and MODStop. Doesn't really matter, but I like having the Snd* functions sort of above the MOD* functions, so MOD* never calls up to Snd*, and game code never calls down to MOD*. And since MODUpdate calls MODStop, which would otherwise be SndStopMOD, I decided to do it this way.<br>
+Actually what I've found works best is to have a seperate 'namespace' for the SFX/internal type functions, and keep the Snd prefix entirely as a wrapper. That way, you can swap out entire sound engines without modifying a line of game code. This engine isn't quite complex enough to warrant such a setup, but it's good to know.<br>
+I used to loathe wrappers though, so feel free to rip all of them out and call MOD* functions directly and stuff if it makes you happy.<br><br>
+
+I also added SndPauseMOD and SndUnpauseMOD, but couldn't bring myself to make them wrappers when they do so little and the MOD code never calls them. Snuck in an if(sndMod.state != MOD_STATE_PLAY) return; in MODUpdate, so the pause will actually work :)<br><br>
+
+Also moved SndMix to ARM code in IWRAM, so it's much faster (but still slow). It's in Irq.c now, just out of convenience because that file is compiled as ARM code. I switched the mixing frequency up to 31536Hz instead of 18157Hz just for the heck of it. Sounds a bit better, and actually takes less CPU than 18157Hz used to...<br><br>
+
+
+
+<a href="sound7.zip">Example project for Day 7 (160KB)</a><br><br>
+
+<center><b><a href="../index.html">Home</a>, <a href="sound6.html">Day 6</a>, <a href="sound8.html">Day 8</a></b></center>
+
+</body>
+
+</html>

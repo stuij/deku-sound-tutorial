@@ -1,0 +1,1176 @@
+<html>
+
+<head>
+<title>Sound Mixing - Deku's Tree of Art</title>
+</head>
+
+<body text=#ffffff link=#80ffff vlink=#80e0f0 bgcolor=#c09973 bg=graphics/bg.gif>
+<center><font size="+3" color=#604040><b>Sound on the Gameboy Advance</b></font><br><font size="+2" color = #4080c0>Day 8</font></center><br><br>
+
+Finally, the completion of the MOD player! Here I'll give a full treamtment of all the effects one by one (well, sometimes in groups). You probably won't want to read the whole thing straight through since it's so long, it's more meant as a reference for the specific details of each effect.<br>
+Some of them do have changes to the player logic, most notably <a href="sound8.html#finetune">finetune</a> adds the finetune variable to MOD_CHANNEL, <a href="sound8.html#arpeggio">arpeggio</a> adds the note variable, and <a href="sound8.html#orderjump">jump to order/break to row</a> add some new control in the main MODUpdate.<br><br>
+
+<a href="sound8.html#effects">1. Effects</a><br>
+<a href="sound8.html#setvol">--Set volume (0xC)</a><br>
+<a href="sound8.html#offset">--Sample offset (0x9)</a><br>
+<a href="sound8.html#volslide">--Volume slide (0xA)</a><br>
+<a href="sound8.html#e">--0xE effects</a><br>
+<a href="sound8.html#callback">--Undefined/callback (0xE0)</a><br>
+<a href="sound8.html#finetune">--Set finetune (0xE5)</a><br>
+<a href="sound8.html#arpeggio">--Arpeggio (0x0)</a><br>
+<a href="sound8.html#pitchslide">--Pitch slides (general)</a><br>
+<a href="sound8.html#portaupdown">--Porta up and down (0x1, 0x2)</a><br>
+<a href="sound8.html#toneporta">--Tone porta (0x3)</a><br>
+<a href="sound8.html#tpvs">--Tone porta+volslide (0x5)</a><br>
+<a href="sound8.html#orderjump">--Jump to order (0xB) and break to row (0xD)</a><br>
+<a href="sound8.html#fineslide">--Fine pitch slides (0xE1, 0xE2)</a><br>
+<a href="sound8.html#glissando">--Glissando (0xE3)</a><br>
+<a href="sound8.html#vibrato">--Vibrato (0x4) and tremolo (0x7)</a><br>
+<a href="sound8.html#waveform">--Vibrato waveform (0xE4) and tremolo waveform (0xE7)</a><br>
+<a href="sound8.html#finevolslide">--Fine volume slides (0xEA, 0xEB)</a><br>
+<a href="sound8.html#notefx">--Retrigger note (0xE9), note cut (0xEC), and note delay (0xED)</a><br>
+<a href="sound8.html#patloop">--Pattern loop (0xE6)</a><br>
+<a href="sound8.html#patdelay">--Pattern delay (0xEE)</a><br>
+<a href="sound8.html#lastone">--Undefined #2 (0xEF)</a><br>
+<a href="sound8.html#theend">2. Closing</a><br><br>
+
+<a href="sound8.zip">Example project (297KB)</a><br><br><br><br>
+
+
+
+<font size=+2><a name=effects>1. Effects</font><br><br>
+
+<font size=+2><a name=setvol>Set volume (0xC)</font><br><br>
+
+Set the channel's volume to the parameter, unless the parameter is greater than 64. Quite straightforward and easy to do:<br><br>
+
+<pre>static void MODFXSetVol(MOD_UPDATE_VARS *vars)
+{
+   vars->modChn->vol = vars->param;
+   if(vars->modChn->vol > 64)   // Beware of mischievous musicians
+      vars->modChn->vol = 64;
+
+   vars->modChn->updateFlags |= MOD_UPD_FLG_SET_VOL;   // Update the mixer channel volume
+}</pre>
+
+And put it into the function pointer table like so...<br><br>
+
+<pre><font color=#d0d0d0>static const MOD_EFFECT_FUNC_PTR modEffectTable[MOD_EFFECT_TABLE_NUM][16] =
+{
+   {   // MOD_EFFECT_TABLE_ROW
+      NULL,          // 0x0: Arpeggio
+      ...</font><font color=#90f090>
+      MODFXSetVol    // 0xC: Set volume</font><font color=#d0d0d0>
+      ...
+   },
+   {   // MOD_EFFECT_TABLE_MID
+      NULL,          // 0x0: Arpeggio
+      ...
+   }
+};</font></pre>
+
+One down!<br><br><br><br>
+
+
+
+<font size=+2><a name=offset>Sample offset (0x9)</font><br><br>
+
+This starts the sample playing from somewhere other than right at the start. To be precise, it starts param*256 samples into the data. It needs a new variable added to MOD_UPDATE_VARS, and a bit of code in MODPlayNote, but nothing big.<br><br>
+
+<pre><font color=#d0d0d0>typedef struct _MOD_UPDATE_VARS
+{
+   MOD_CHANNEL   *modChn;       // Pointer to the current channel (sndMod.channel[curChn])
+   SOUND_CHANNEL *sndChn;       // Corresponding mixer channel (sndChannel[curChn])
+
+   u8          note;            // These 4 are just the local vars from MODProcessRow
+   u8          sample;
+   u8          effect;
+   u8          param;
+
+   u8          updateFlags;     // MOD_UPDATE_FLAGS</font><font color=#ffffb0>
+   u8          sampleOffset;    // Offset added to sample if a note is played
+
+</font><font color=#d0d0d0>} MOD_UPDATE_VARS;</font></pre>
+
+Initialize sampleOffset to 0 on row and mid ticks (in the modDefaultVars initializer structs). Then the effect function just sets it to the parameter:<br><br>
+
+<pre>static void MODFXSampleOffset(MOD_UPDATE_VARS *vars)
+{
+   vars->sampleOffset = vars->param;
+}</pre>
+
+Then in MODPlayNote, instead of initializing vars->sndChn->pos to 0, initialize it with the offset. Since it still needs to be multiplied by 256, we'll shift it left 8. Then because the position is 12-bit fixed-point, we'll shift it 12 more, for a total of 20:<br><br>
+
+<pre><font color=#d0d0d0>static void MODPlayNote(MOD_UPDATE_VARS *vars)
+{
+   ...</font><font color=#ffffb0>
+   vars->sndChn->pos = vars->sampleOffset<<20;</font><font color=#d0d0d0>
+   ...
+}</font></pre>
+
+Since it's initialized to 0, it normally won't make any difference. That's two effects down!<br><br><br><br>
+
+
+
+<font size=+2><a name=volslide>Volume slide (0xA)</font><br><br>
+
+Now for something with a little more to it. Volslide increases or decreases the volume every MID-tick, and does nothing on row-ticks. The parameter is set up kind of funny to decide wether to slide up or down.<br>
+If the lower 4 bits are all 0, then the upper 4 bits are the slide UP speed.<br>
+If the upper 4 bits are all 0, the lower 4 are the slide DOWN speed.<br>
+If all bits are 0, then use the last volslide param used on this channel.<br>
+If none of those are true (bits are set all over the place), we'll assume our musician was on crack and do nothing (i.e. it's invalid).<br>
+In more programming terms:<br>
+<pre>Param = 0xX0 --- Slide up at a speed of X volume levels per tick.
+Param = 0x0X --- Slide down at X levels per tick.
+Param = 0x00 --- Use last speed.
+Param = 0xXX --- Do nothing.</pre>
+
+For example, if your volume starts at 10, and you give parameter 0x40 (slide up 4 per tick), the process will go as follows:<br><br>
+
+<pre>Tick 0 --- Vol = 10 (no change)
+Tick 1 --- Vol = 14
+Tick 2 --- Vol = 18
+Tick 3 --- Vol = 22
+...</pre>
+
+And continues on until the next row-tick.<br>
+There is one new thing here, that bit about using the last speed if you give it a 0. In order to use the last speed, we need to remember what it was. To do so, we'll just add a variable to our old friend, the MOD_CHANNEL struct:<br><br>
+
+<pre><font color=#d0d0d0>typedef struct _MOD_CHANNEL
+{
+   u16 period;       // Current period of note being played
+
+   u8 sample;        // Last sample used on this channel
+   u8 vol;           // Current volume
+
+   u8 effect;        // Current effect running (set to 0 on row tick if no effect/parameter)
+   u8 param;         // Current parameter (set to 0 row tick if no effect/parameter)</font><font color=#ffffb0>
+
+   s8 volslideSpeed; // Current volslide speed
+
+</font><font color=#d0d0d0>} MOD_CHANNEL;</font></pre>
+
+I made it a signed value so it's easier to use, but you could just store the parameter as-is and do the checking for wether to slide up/down during the mid-tick update if you'd rather.<br>
+Another new thing here is that we'll actually do seperate things on row-ticks and mid-ticks. On row ticks, we'll set MOD_CHANNEL::volslideSpeed according to the parameter, then on mid-ticks we'll actually add it to the volume, and make sure it doesn't run over 64 or under 0. So, for row-ticks:<br><br>
+
+<pre>static void MODFXVolslideRow(MOD_UPDATE_VARS *vars)
+{
+   if(vars->param != 0)
+   {
+      if((vars->param & 0x0f) == 0)       // Bottom bits are 0, top bits are speed UP
+         vars->modChn->volslideSpeed = vars->param >> 4;
+      else if((vars->param & 0xf0) == 0)  // Top bits are 0, bottom bits are speed DOWN
+         vars->modChn->volslideSpeed = -vars->param;
+      else                                // Invalid param, just disable the whole effect
+         vars->modChn->effect = vars->modChn->param = 0;
+   }
+   // Else use the volslideSpeed like it is
+}</pre>
+
+That will go into the row-tick function pointer table. Then for mid-ticks, we'll just add the slide speed to the volume and clip it. Because we'll be doing other things involving volume slides later (fine slides and tremolo, to be exact), we'll put this in a helper function that can be recycled for all of them:<br><br>
+
+<pre>static u32 MODVolumeSlide(u32 volume, s32 slide)
+{
+   volume += slide;
+   if(volume > 64)      // Since volume is unsigned, this covers 
+   {                    // sliding too far in either direction
+      if(slide > 0)
+         volume = 64;   // Must have gone above 64
+      else
+         volume = 0;    // Must have gone below 0 and wrapped
+   }
+   return volume;
+}</pre>
+
+Kind of funky way to clamp it to (0,64) there. Since the unsigned volume will wrap to 0xffffffff if it goes below 0, we can just check if it's greater than 64 to see if it slid too far in either direction. That way we only have to do one check for the most common case of still being in range.<br>
+Then if the speed was negative, we know it must have gone below 0 and wrapped, or if the speed is positive, it had to have gone up past 64 and needs squeezed back down.<br><br>
+
+Then the mid-tick function itself:<br><br>
+
+<pre>static void MODFXVolslideMid(MOD_UPDATE_VARS *vars)
+{
+   vars->modChn->vol = MODVolumeSlide(vars->modChn->vol, vars->modChn->volslideSpeed);
+      // Don't forget to signal that the mixer channel volume will need to be set
+   vars->modChn->updateFlags |= MOD_UPD_FLG_SET_VOL;
+}</pre>
+
+Then shove those two into the table and we're done!<br><br>
+
+<pre><font color=#d0d0d0>static const MOD_EFFECT_FUNC_PTR modEffectTable[MOD_EFFECT_TABLE_NUM][16] =
+{
+   {   // MOD_EFFECT_TABLE_ROW
+      NULL,               // 0x0: Arpeggio
+      ...</font><font color=#90f090>
+      MODFXVolslideRow,   // 0xA: Volume slide</font><font color=#d0d0d0>
+      ...
+   },
+   {   // MOD_EFFECT_TABLE_MID
+      NULL,               // 0x0: Arpeggio
+      ...</font><font color=#90f090>
+      MODFXVolslideMid,   // 0xA: Volume slide</font><font color=#d0d0d0>
+      ...
+   }
+};</font></pre><br><br>
+
+
+
+<font size=+2><a name=e>The 0xE effects</font><br><br>
+
+Effect 0xE is sort of a whole second class of effects that each take a 4-bit parameter, and use the upper 4 param bits as the secondary effect type. Seeing as how they're all tiny little things, we'll just handle them with a big switch statement instead of making a whole new function pointer table for them:<br><br>
+
+<pre>void MODFXSpecialRow(MOD_UPDATE_VARS *vars)
+{
+   u32 param = vars->modChn->param & 0xf;   // Will be handy
+
+   switch(vars->modChn->param >> 4)
+   {
+      case 0x0:
+         // Do 0xE0 row-tick stuff
+         break;
+
+      case 0x1:
+         // Do 0xE1 row-tick stuff
+         break;
+
+      ...
+
+      case 0xF:
+         // Do 0xEF row-tick stuff
+         break;
+   }
+}</pre>
+
+Same for mid-ticks, except do mid-tick stuff instead :)<br>
+Now we'll just add code into those places instead of making whole new functions. We could have handled all the effects this way, but it would be one heck of a switch statement.<br><br><br><br>
+
+
+
+<font size=+2><a name=callback>Undefined/callback (0xE0)</font><br><br>
+
+This effect doesn't do anything, but because of that, it can be very useful. We can DEFINE a use for it, like to trigger things in a demo in time with the music. An easy way to do this is to make a callback function and pass the 4-bit parameter to it, and a boolean for wether this is a row-tick or not. The callback function is totally user-defined and can use the parameter however it wants. So, we'll define a callback type and add it to the main MOD struct, and add a function for external game code to set it.
+
+<pre>typedef void (*MOD_CALLBACK)(u32 param, BOOL bRowTick);<font color=#d0d0d0>
+
+typedef struct _MOD
+{
+   const SAMPLE_HEADER **sample;  // Pointer to table of samples in ROM
+   const u8 **pattern;            // Pointer to table of pointers to patterns
+   const u8 *order;               // Array of pattern numbers to play</font><font color=#ffffb0>
+   MOD_CALLBACK callback;         // User function called by 0xE0 effects</font><font color=#d0d0d0>
+
+   const u8 *rowPtr;              // Current position in current pattern, for quick access
+   ...
+
+} MOD;</font>
+
+void MODSetCallback(MOD_CALLBACK callback)
+{
+   sndMod.callback = callback;
+}</pre>
+
+Then the code to actually call it (that is, unless the user hasn't set a callback):<br><br>
+
+<pre><font color=#d0d0d0>void MODFXSpecialRow(MOD_UPDATE_VARS *vars)
+{
+   u32 param = vars->modChn->param & 0xf;
+   switch(vars->modChn->param >> 4)
+   {
+      case 0x0:</font><font color=#ffffb0>
+            // Call the user function with the 4-bit parameter, and bRowTick to TRUE
+         if(sndMod.callback != NULL)
+            sndMod.callback(param, TRUE);</font><font color=#d0d0d0>
+         break;
+      ...
+   }
+}</font></pre>
+
+And same for MODFXSpecialMid, except pass it a FALSE for bRowTick. That's all there is to it.<br>
+An example callback that the user creates would be something like this:<br><br>
+
+<pre>void ImAFunction(u32 param, BOOL bRowTick)
+{
+   if(bRowTick == TRUE)
+      FlashScreenThisColor(param);
+}</pre>
+
+Then put an 0xE0X effect in your song every time you want the screen to flash, and set the X there to the color you want to flash it. Fun!<br><br><br><br>
+
+
+
+<font size=+2><a name=finetune>Set finetune (0xE5)</font><br><br>
+
+This overrides the sample's default finetune value. For this, we'll need to add a variable in MOD_CHANNEL to store the current finetune:<br><br>
+
+<pre><font color=#d0d0d0>typedef struct _MOD_CHANNEL
+{
+   u16 period;       // Current period of note being played
+
+   u8 note;          // Last note played on this channel
+   u8 sample;        // Last sample used on this channel
+   u8 vol;           // Current volume</font><font color=#ffffb0>
+   u8 finetune;      // Current finetune (0-15)</font><font color=#d0d0d0>
+   ...
+</font><font color=#d0d0d0>} MOD_CHANNEL;</font></pre>
+
+Then the code sets it, and updates the note frequency if there's a note playing. We also need to change MODPlayNote to use this instead of looking up the finetune based on the sample.<br><br>
+
+<pre><font color=#d0d0d0>void MODFXSpecialRow(MOD_UPDATE_VARS *vars)
+{
+   u32 param = vars->modChn->param & 0xf;
+   switch(vars->modChn->param >> 4)
+   {
+      ...
+      case 0x5:</font><font color=#ffffb0>
+         vars->modChn->finetune = param;
+         if (vars->modChn->note != MOD_NO_NOTE)
+         {
+            vars->modChn->period = notePeriodTable[
+               vars->modChn->finetune*60 + vars->modChn->note];
+            vars->updateFlags |= MOD_UPD_FLG_SET_FREQ;
+         }</font><font color=#d0d0d0>
+         break;
+      ...
+   }
+}
+
+static void MODPlayNote(MOD_UPDATE_VARS *vars)
+{
+   ...
+      // 60 notes total, and one full set of notes for each finetune level</font><font color=#90f090>
+   vars->modChn->period = notePeriodTable[
+      vars->modChn->finetune*60 + vars->modChn->note];</font><font color=#d0d0d0>
+   ...
+}</font></pre><br><br>
+
+
+
+<font size=+2><a name=arpeggio>Arpeggio (0x0)</font><br><br>
+
+This is an important one because it's what gives chip music its chippyness, and chip is good. Basically you play the specified note for one tick, then note+X for one tick, then note+Y, then note, note+X... until the next row, to sort of simulate a chord. X and Y are from the parameter, read as 0xXY. So, we need a variable in MOD_CHANNEL to track the current arpeggio tick, which will run 0 to 2, 0 being note, 1 being note+X, and 2 being note+Y. Also, we need one remember the last note played, which will be set in the main row-tick (not in this particular effect, because some others need it too).<br><br>
+
+<pre><font color=#d0d0d0>typedef struct _MOD_CHANNEL
+{
+   u16 period;      // Current period of note being played</font><font color=#ffffb0>
+   u8 note;         // Last note played on this channel</font><font color=#d0d0d0>
+   u8 sample;       // Last sample used on this channel
+   ...
+   u8 arpeggioTick; // Cycles 0-2 for original note and arpeggio notes
+</font><font color=#d0d0d0>} MOD_CHANNEL;
+
+static void MODProcessRow()
+{
+   for(curChannel = 0; curChannel < SND_MAX_CHANNELS; curChannel++)
+   {
+      ...
+        // Set these for the mid-ticks</font><font color=#ffffb0>
+      vars.modChn->note = vars.note;</font><font color=#d0d0d0>
+      vars.modChn->effect = vars.effect;
+      vars.modChn->param  = vars.param;
+
+      ...
+   }
+}</font></pre>
+
+Now for the actual effect. Row tick is pretty standard, and mid-tick just updates the arpeggio tick and sets the new note.<br>
+
+<pre>static void MODFXArpeggioRow(MOD_UPDATE_VARS *vars)
+{
+   vars->modChn->arpeggioTick = 0;
+      // Cancel the effect if no note has been played on this channel
+   if(vars->modChn->note == MOD_NO_NOTE)
+      vars->modChn->effect = vars->modChn->param = 0;
+}
+
+static void MODFXArpeggioMid(MOD_UPDATE_VARS *vars)
+{
+   u32 arpNote;
+
+   if(++vars->modChn->arpeggioTick > 2)
+      vars->modChn->arpeggioTick = 0;
+
+   switch(vars->modChn->arpeggioTick)
+   {
+      case 0: arpNote = vars->modChn->note;                               break;
+      case 1: arpNote = vars->modChn->note + (vars->modChn->param >> 4);  break;
+      case 2: arpNote = vars->modChn->note + (vars->modChn->param & 0xf); break;
+   }
+
+   if(arpNote > MOD_MAX_NOTE)
+      arpNote = MOD_MAX_NOTE;
+
+   vars->modChn->period = notePeriodTable[vars->modChn->finetune*60 + arpNote];
+
+   vars->updateFlags |= MOD_UPD_FLG_SET_FREQ;
+
+}   // MODFXArpeggioMid</pre><br><br>
+
+
+
+<font size=+2><a name=pitchslide>Pitch slides</font><br><br>
+
+Also called portamento. These are even simpler than volume slides, because the parameter is just a straight number of MOD periods to add or subtract (effect 0x1 is slide up, 0x2 is slide down). Periods are kind of backward, so adding means a lower pitch (longer time between each sample) and subtracting means higher pitch (shorter time), so a slide up actually subtracts from the period, and slide down adds to it.<br>
+This is where working in periods instead of Hz really helps. For those who are curious of the formula to slide in Hz, I'll give a quick demo of how to derive it. For those who don't think they'll ever use it, click <a href="sound8.html#ihatehz">here</a> to skip to period-based porta handling.<br><br>
+
+If you remember, we had this formula to convert from periods to Hz:<br><br>
+
+<pre>(1)   Hz = AMIGA_VAL / period</pre>
+
+And because these pitch slide effects add the slide value to the period, we have:<br><br>
+
+<pre>(2)   newPeriod = oldPeriod + slide</pre>
+
+Where slide can be positive (<i>decrease</i> pitch), or negative (<i>increase</i> pitch). Then plug all sorts of equations into eachother like so:<br><br>
+
+<pre>(3)   newHz = AMIGA_VAL / newPeriod                       "new" names plugged into (1)
+(4)   newHz = AMIGA_VAL / (oldPeriod + slide)             (2) plugged into (3)
+
+      oldHz = AMIGA_VAL / oldPeriod                       "old" names plugged into (1)
+(5)   oldPeriod = AMIGA_VAL / oldHz
+
+(6)   newHz = AMIGA_VAL / ((AMIGA_VAL / oldHz) + slide)   (5) pluged into (4)
+
+      newHz = AMIGA_VAL / ((AMIGA_VAL / oldHz) + (slide*<font color=#ffffb0>oldHz / oldHz</font>))
+      newHz = AMIGA_VAL / ((AMIGA_VAL + slide*oldHz) / oldHz)
+      newHz = AMIGA_VAL * (oldHz / (AMIGA_VAL + slide*oldHz))
+      <font color=#ffffb0>newHz = (AMIGA_VAL * oldHz) / (AMIGA_VAL + slide*oldHz)</font></pre>
+
+And that's it. Still one little problem, AMIGA_VAL*oldHz will more often than not overflow 32 bits, so either some loss of accuracy or a 64-bit divide will be necessary. Also, you can get negative numbers (or a divide by 0) out of this if slide*oldHz is too far negative. If that happens, it means the corresponding period is below 0, or the pitch is too high and needs clipped back down to some arbitrarily chosen maximum. That's all the space I'll fill with this, as we have bigger fish to fry (well, other fish that we'll actually eat).<br><br><br>
+
+
+<a name=ihatehz>Ok, back to what we'll actually use.<br>
+First, we'll make another little helper function to slide the period and clip it to some minumum and maximum values. I grabbed the lowest note at the lowest finetune (C-0, finetune -8) and highest note at highest finetune (B-4, finetune 7) from the notePeriodTable, but they're pretty arbitrary.<br><br>
+
+<pre>#define MOD_PERIOD_MIN   53     // Highest pitch
+#define MOD_PERIOD_MAX   1814   // Lowest pitch
+
+static s32 MODPitchSlide(s32 period, s32 slide)
+{
+   period += slide;
+   if (period > MOD_PERIOD_MAX)
+      period = MOD_PERIOD_MAX;
+   else if (period < MOD_PERIOD_MIN)
+      period = MOD_PERIOD_MIN;
+
+   return period;
+}</pre>
+
+This can be recycled for all our pitch sliding needs. I made it use signed variables so it won't ever wrap around, since the lower limit check isn't 0 this time. I'd kind of rather keep it unsigned because we'll always be using it with unsigneds, but oh well.<br><br><br><br>
+
+
+
+<font size=+2><a name=portaupdown>Porta up and down (0x1, 0x2)</font><br><br>
+
+Now to put that helper function to use. We'll need a new variable in MOD_CHANNEL to remember the speed incase of 0 parameters. These two share the same memory, so for example if you slide UP at 10 periods per tick, and then slide DOWN with a 0 parameter, it will go down at 10 too. To us, that means only one variable to store:<br><br>
+
+<pre><font color=#d0d0d0>typedef struct _MOD_CHANNEL
+{
+   u32 period;       // Current period of note being played
+   ...
+   s8 volslideSpeed; // Current volslide speed</font><font color=#ffffb0>
+   u8 portaSpeed;    // Current pitch slide up/down speed
+
+</font><font color=#d0d0d0>} MOD_CHANNEL;</font></pre>
+
+Nothing to it. Now for the row-tick function to check the parameter and set the variable if needed:<br><br>
+
+<pre>static void MODFXPortaRow(MOD_UPDATE_VARS *vars)
+{
+   if(vars->param != 0)
+   {
+      vars->modChn->portaSpeed = vars->param;
+   }
+   // Else use the speed like it is
+}</pre>
+
+Boy, that was easy. Notice that I didn't even specify wether that's porta up or porta down. Since both share the same speed memory, there wouldn't be any difference if we made another function.<br>
+However, the mid-ticks are different, because it needs to add or subtract the speed depending on the effect. We could make a single function and check the effect number, but I'll make two:<br><br>
+
+<pre>static void MODFXPortaUpMid(MOD_UPDATE_VARS *vars)
+{
+   vars->modChn->period = 
+      MODPitchSlide(vars->modChn->period, -vars->modChn->portaSpeed);  // Negative=higher pitch
+   vars->updateFlags |= MOD_UPD_FLG_SET_FREQ;
+}
+
+static void MODFXPortaDownMid(MOD_UPDATE_VARS *vars)
+{
+   vars->modChn->period = 
+      MODPitchSlide(vars->modChn->period, vars->modChn->portaSpeed);   // Positive=lower pitch
+   vars->updateFlags |= MOD_UPD_FLG_SET_FREQ;
+}</pre>
+
+Then we'll put all these in the table and move on with our lives (remember, the row function can be used for both):<br><br>
+
+<pre><font color=#d0d0d0>static const MOD_EFFECT_FUNC_PTR modEffectTable[MOD_EFFECT_TABLE_NUM][16] =
+{
+   {   // MOD_EFFECT_TABLE_ROW
+      ...</font><font color=#90f090>
+      MODFXPortaRow,      // 0x1: Pitch slide up
+      MODFXPortaRow,      // 0x2: Pitch slide down</font><font color=#d0d0d0>
+      ...
+   },
+   {   // MOD_EFFECT_TABLE_MID
+      ...</font><font color=#90f090>
+      MODFXPortaUpMid,    // 0x1: Pitch slide up
+      MODFXPortaDownMid,  // 0x2: Pitch slide down</font><font color=#d0d0d0>
+      ...
+   }
+};</font></pre><br><br>
+
+
+
+<font size=+2><a name=toneporta>Tone porta (0x3)</font><br><br>
+
+This one is a little trickier. Our goal is to slide up or down at <i>param</i> periods per tick, until we get to the note that was played along with the effect. The note becomes sort of a second parameter, and doesn't get played like a normal note. You can also just put a bunch of tone porta effects after a note to keep sliding toward it, like so:<br><br>
+
+<pre>Note Smp FX/Param
+C-1  01  ---
+C-2  01  310
+---  --  300
+---  --  300
+---  --  300</pre>
+
+That would play the note C-1, and then slide toward C-2 at 10 periods per tick for 4 rows.<br>
+The point is, it needs to remember what note it was sliding toward, which means we actually need 2 new variables in MOD_CHANNEL for this one.<br><br>
+
+<pre><font color=#d0d0d0>typedef struct _MOD_CHANNEL
+{
+   u32 period;        // Current period of note being played
+   ...
+   s8 volslideSpeed;  // Current volslide speed
+   u8 portaSpeed;     // Current pitch slide up/down speed</font><font color=#ffffb0>
+   u8 tonePortaNote;  // Current note to slide toward
+   u8 tonePortaSpeed; // Speed to slide toward it
+
+</font><font color=#d0d0d0>} MOD_CHANNEL;</font></pre>
+
+For the row-tick, we just need to store the note/speed if they're there, and stop the note from playing (else there wouldn't be any sliding to do!)<br><br>
+
+<pre>static void MODFXTonePortaRow(MOD_UPDATE_VARS *vars)
+{
+   if(vars->note != MOD_NO_NOTE)
+      vars->modChn->tonePortaNote = vars->note;
+   // Else use the note like it is
+
+   if(vars->param != 0)
+      vars->modChn->tonePortaSpeed = vars->param;
+   // Else use the speed like it is
+
+   vars->modChn->updateFlags &= ~MOD_UPD_FLG_PLAY_NOTE;
+}</pre>
+
+For mid-ticks, all we have to do is check wether the current period is less than or greater than the period of the target note, and slide up or down accordingly. Of course, we want to stop once we get there so we need to check if we went too far:<br><br>
+
+<pre>static void MODFXTonePortaMid(MOD_UPDATE_VARS *vars)
+{
+      // Get the note frequency same as we do in MODPlayNote
+   u16 targetPeriod = notePeriodTable[
+      vars->modChn->finetune*60 + vars->modChn->tonePortaNote];
+
+   if(vars->modChn->period < targetPeriod)                       // Need to slide up
+   {
+      vars->modChn->period = MODPitchSlide(
+         vars->modChn->period, vars->modChn->tonePortaSpeed);    // Positive=lower pitch
+      if(vars->modChn->period > targetPeriod)                    // Don't go too far
+         vars->modChn->period = targetPeriod;
+   }
+   else if (vars->modChn->period > targetPeriod)                 // Need to slide down
+   {
+      vars->modChn->period = MODPitchSlide(
+         vars->modChn->period, -vars->modChn->tonePortaSpeed);   // Negative=higher pitch
+      if(vars->modChn->period < targetPeriod)                    // Don't go too far
+         vars->modChn->period = targetPeriod;
+   }
+   // Else we're already at the target period
+}</pre><br><br>
+
+
+
+<font size=+2><a name=tpvs>Tone porta+volslide (0x5)</font><br><br>
+
+This is a combo effect, which behaves exactly like a regular volslide, and a tone porta with param 0 at the same time. The parameter goes with the volslide part, so the tone porta speed has to have been set by a previous effect. We'll do this the easy way and reuse the tone porta and volslide row-tick functions, and trick tone porta into thinking it got a 0 parameter. Mid-ticks just need to call both updates:<br><br>
+
+<pre>static void MODFXTonePortaVolslideRow(MOD_UPDATE_VARS *vars)
+{
+      // Param goes with the volslide part, tone porta just continues
+      // So handle volslide like normal
+   MODFXVolslideRow(vars);
+      // Now trick the tone porta into thinking there was a 
+      // 0 'continue' param. This update vars param won't be 
+      // used again, so changing it won't hurt anything
+   vars->param = 0;
+   MODFXTonePortaRow(vars);
+}
+
+static void MODFXTonePortaVolslideMid(MOD_UPDATE_VARS *vars)
+{
+   MODFXVolslideMid(vars);
+   MODFXTonePortaMid(vars);
+}</pre>
+
+Nothing to it.<br><br><br><br>
+
+
+
+<font size=+2><a name=orderjump>Jump to order (0xB), and break to row (0xD)</font><br><br>
+
+These effects are pretty similar, so I'll do them both at once to save space. 0xB is useful to create looping songs. Just put it at the end of the song to jump back to whatever pattern you want to start repeating from. The actual jump doesn't take place until the next row is about to play, so any notes on the same row as this effect will still be played. 0xD is similar, except it just breaks to the next order, but starts playing <i>param</i> rows into it.<br>
+To make these happen, we'll add some simple variables to the MOD struct. The first one is breakOrder which stores the next order to play. Normally it will be curOrder+1, but 0xB can change it. The next one is breakRow, normally 0.<br><br>
+
+<pre><font color=#d0d0d0>typedef struct _MOD
+{
+   ...</font><font color=#ffffb0>
+   u8 nextOrder;      // Normally curOrder+1, unless an effect changes it
+   u8 breakRow;       // Starting row when order changes (normally 0)</font><font color=#d0d0d0>
+   ...
+} MOD;</font></pre>
+
+Then in MODUpdate, instead of just incrementing the current order and setting the row to 0, we set the order to nextOrder, and row to breakRow. Then set nextOrder to curOrder+1, and breakRow to 0, so it ends up acting just like it did before. The difference is that the effects can change those variables to make it do what THEY want.<br><br>
+
+I'll also take this opportunity to clean things up a bit. Where originally in MODUpdate we had this ugly block of code with a bug in it:<br><br>
+
+<pre>   if(++sndMod.curRow >= MOD_PATTERN_ROWS)
+   {
+      sndMod.curRow = 0;
+      if(++sndMod.curOrder >= sndMod.orderCount)
+      {
+         s32 i;
+         for(i = 0; i < SND_MAX_CHANNELS; i++)
+            sndChannel[i].data = NULL;
+
+         sndMod.state = MOD_STATE_STOP;
+         return;
+      }
+      else
+      {
+         sndMod.rowPtr = sndMod.pattern[sndMod.order[sndMod.curOrder]];
+      }
+   }</pre>
+
+We shall now have this pretty block of code, without the bug:<br><br>
+
+<pre>   if(sndMod.curRow++ >= MOD_PATTERN_ROWS)
+   {
+      if(MODSeek(sndMod.nextOrder, sndMod.breakRow) == FALSE)
+         return;
+
+      sndMod.curRow++;
+   }</pre>
+
+This uses the new function MODSeek to advance to the next order, instead of doing it directly. MODSeek sets the position you tell it to, sets nextOrder to curOrder+1 and breakRow to 0, and sets the rowPtr. If the order you pass in is past the end of the song, it stops the song and returns FALSE, which we check for here and bail out if so.<br><br>
+
+The next line, sndMod.curRow++, is the fix for the bug I mentioned. Without that, it skips the last row of the first pattern.<br>
+Imagine if our patterns were only 3 rows long. When first starting the song, you set curRow to 0, and <i>then</i> call MODUpdate. It increments curRow to 1 and checks if it's >= 3 (pattern length). It's not, so play 1st row of data.<br>
+Next tick, inc curRow to 2, check >= 3, it isn't so play 2nd row of data.<br>
+Next tick, inc curRow to 3, check >= 3, it is, so break to next order.<br>
+Looking back on that, only 2 rows were actually played, not 3. Furthermore, on the break, it would reset curRow to 0 and then play the first row of the new pattern. The reason it's sneaky is because the break happens <i>after</i> curRow's increment, while on the initial pattern example above, we would come in from the start and increment curRow to 1 before the first row is played.<br><br>
+
+Anyway, down at the end of MODSeek, we'll set nextOrder and breakRow to their normal values:<br><br>
+
+<pre><font color=#d0d0d0>static BOOL MODSeek(u32 order, u32 row)
+{
+   ...</font><font color=#ffffb0>
+
+   sndMod.nextOrder = sndMod.curOrder + 1;
+   sndMod.breakRow  = 0;</font><font color=#d0d0d0>
+   sndMod.rowPtr    = sndMod.pattern[sndMod.order[sndMod.curOrder]] + 
+                         sndMod.curRow*4*SND_MAX_CHANNELS;  // 4 bytes/channel/row
+
+   return TRUE;         // TRUE = continue playing
+}   // MODSeek</font></pre>
+
+And in MODUpdate, seek to these positions when advancing to the next order:<br><br>
+
+<pre><font color=#d0d0d0>void MODUpdate()
+{
+   if(++sndMod.tick >= sndMod.speed)
+   {18664365703
+      sndMod.tick = 0;
+      if(sndMod.curRow++ >= MOD_PATTERN_ROWS)
+      {</font><font color=#90f090>
+         if(MODSeek(sndMod.nextOrder, sndMod.breakRow) == FALSE)</font><font color=#d0d0d0>
+            return;   // FALSE = song ended
+
+         sndMod.curRow++;
+      }
+      ...</font></pre>
+
+So now all that's left is the effect functions themselves:<br><br>
+
+<pre>static void MODFXJumpToOrder(MOD_UPDATE_VARS *vars)
+{
+   sndMod.nextOrder = vars->param;
+   sndMod.curRow = MOD_PATTERN_ROWS;   // Break next update
+}
+
+static void MODFXBreakToRow(MOD_UPDATE_VARS *vars)
+{
+   sndMod.breakRow = vars->param;
+   sndMod.curRow = MOD_PATTERN_ROWS;   // Break next update
+}</pre>
+
+Into the function table (row-tick only) and that's that.<br><br><br><br>
+
+
+
+<font size=+2><a name=pan>Set panning (0x8 and 0xE8)</font><br><br>
+
+Our mixer is mono-only, so we have no panning variables. If we did though, MOD_CHANNEL would have a u8 called pan, and it would be set to the parameter of effect 0x8 (0 being left, 255 being right). Effect 0xE8 does the same thing, but not as good. It has a 4-bit parameter, so 0 is left, and 15 is right. Just multiply by 16 to get it up to the same range as 0x8.<br>
+Then to calculate the actual left and right volume based on a 255 position pan:<br><br>
+
+<pre>leftVol = vol * (255-pan) >> 8;
+rightVol = vol * pan >> 8;</pre>
+
+Technically those should be divided by 255 instead of shifted 8 (div 256), but it's such a small difference it's not worth the trouble.<br><br><br><br>
+
+
+
+<font size=+2><a name=fineslide>Fine pitch slides (0xE1, 0xE2)</font><br><br>
+
+These are one of the irritating special case-needing effects I mentioned in day 6 of the series. They act like a regular pitch slide, except only take effect on row-ticks, and do nothing on mid-ticks. The problem is that if you play a note along with a fine slide, the slide still needs to change the new note's frequency. We have our code set up to call the effect functions before the note sets its new frequency, so in comes the special case to fix it.<br>
+We'll add a variable to MOD_UPDATE_VARS (initialized to 0 in the modDefaultVars structs), and set it to the fine slide amount in the effect, and apply it in MODHandleUpdateFlags after the note gets played.<br><br>
+
+<pre><font color=#d0d0d0>typedef struct _MOD_UPDATE_VARS
+{
+   ...</font><font color=#ffffb0>
+   s8          fineSlide;       // Slide amount applied after note is played</font><font color=#d0d0d0>
+
+} MOD_UPDATE_VARS;
+
+void MODFXSpecialRow(MOD_UPDATE_VARS *vars)
+{
+   switch(vars->modChn->param >> 4)
+   {
+      ...</font><font color=#ffffb0>
+      case 0x1:   // Fine slide up
+         vars->fineSlide = -(vars->modChn->param & 0xf);    // Negative=higher pitch
+         break;
+
+      case 0x2:   // Fine slide down
+         vars->fineSlide = vars->modChn->param & 0xf;       // Positive=lower pitch
+         break;</font><font color=#d0d0d0>
+      ...
+   }
+}
+
+static void MODHandleUpdateFlags(MOD_UPDATE_VARS *vars)
+{
+   ...
+   if( (vars.note != MOD_NO_NOTE) && 
+       (vars.updateFlags & MOD_UPD_FLG_PLAY_NOTE) )
+   {
+      MODPlayNote(&vars);
+   }</font><font color=#ffffb0>
+
+      // Apply the fine slide if needed (this will set MOD_UPD_FLG_SET_FREQ too)
+   if(vars.fineSlide != 0)
+   {
+      MODPitchSlide(vars.modChn, vars.fineSlide);
+      vars->updateFlags |= MOD_UPD_FLG_SET_FREQ;
+   }</font><font color=#d0d0d0>
+   ...
+}</font></pre>
+
+It's not THAT bad, just a little distracting from the main work being done.<br><br><br><br>
+
+
+
+<font size=+2><a name=glissando>Glissando (0xE3)</font><br><br>
+
+This is supposed to make pitch slides only slide in full notes so it sounds like you're sliding your finger along a keyboard, rather than a smooth change in pitch. I've never actually implemented it before because MODPlug tracker is the only player I've ever seen actually do it, and it only does it on tone porta effects (not 0x1 and 0x2), so I'm not quite sure if that's the correct behavior, and there's so little support for it elsewhere that very few songs will probably ever use it. Maybe I'll add it to the player sometime, but for now I won't bother.<br><br><br><br>
+
+
+
+<font size=+2><a name=vibrato>Vibrato (0x4) and tremolo (0x7)</font><br><br>
+
+Vibrato sort of wiggles the frequency up and down in a sine wave pattern, and tremolo does the same except on the volume. The parameter is read as 0xSD where S is the speed and D is the depth. We use a table to find the actual amount to modify the frequency. It looks like this:<br><br>
+
+<pre>static const s8 vibratoSineTab[32] = 
+{
+     0, 24, 49, 74, 97,120,141,161,
+   180,197,212,224,235,244,250,253,
+   255,253,250,244,235,224,212,197,
+   180,161,141,120, 97, 74, 49, 24
+};</pre>
+
+The first half of a sine wave. For the second half, we just subtract these values inetad of adding them.<br>
+The goal is to have a final range of + or - 32 MOD periods at maximum depth. Actually a little less, because the max depth is 15, not 16, and the table only goes to 255 instead of 256, but close enough.<br>
+We'll actually go for a final range of +-64, because we'll be using the same code for both vibrato and tremolo, and tremolo needs the higher range. We'll just divide by 2 when using it for vibrato.<br>
+So, to get +-64, when you multiply the 4-bit depth by the 8-bit table, you get 12 bits, so shift down by 6 to get to 6 bits left (0-64). Since we just subtract this value for the second half of the wave, we have our desired range.<br>
+The speed parameter is how many entries in the table to step over on each tick. For example, at a speed of 8, it would go through the table like 0,180,255,180,0,-180,-255,-180, then repeat. For this, we'll keep a vibratoTick variable and add the speed to it each tick, and use that as the index into the table (negating it if it's >32, and wrapping to 0 when it hits 64).<br><br>
+
+To complicate things, there are 3 OTHER wave types you can use instead of the sine. They all still have the final range of +-64 at max depth, and all repeat after 64 ticks. The types are: Sine, Square, Ramp down, and Random.<br>
+We just did sine. For square wave, all we have to do is move the pitch up or down by depth*4 (getting that +-64 range). Up on the first 32 ticks, down on the second 32.<br><br>
+
+For ramp down, we want to slide +64 at tick 0, and go smoothly down to -64 by tick 64. Looks something like this:<br><br>
+
+<pre>\  |\  |\  |\
+ \ | \ | \ | \
+  \|  \|  \|  \</pre>
+
+We'll calculate it mathematically instead of using a table, because it's so easy: subtract the tick from 32, and multiply by 2. Without the *2, at tick 0, you get 32-0=32; at 32, you get 32-32=0; at 64, 32-64=-32. Then multiply by depth to get +-512 and shift down 3 bits to get +-64.<br><br>
+
+Random can be done just about any way you want, because it's random :)<br>
+Also, the speed really has no meaning here because there's a new random number every tick either way. The easiest (but not the best sounding) way to do it is to make a table of 64 random numbers and step through it like normal. We'll make them s8's, so -128 to +127. Then multiply by the 4-bit depth for up to +-2048, then shift down 5 bits to +-64.<br><br>
+
+Normally, the vibrato tick gets reset to 0 when a new note is played, but there's a flag you can set so the tick just continues from where it was. Out of laziness, we'll call it noRetrig, because the default is that you DO reset the tick, so when noRetrig is false and a new note is played, we retrigger. Then we don't have to initialize it anywhere, because the whole MOD struct is memset'd to 0 when loading :)<br><br>
+
+So, to make the code shareable between vibrato and tremolo, we'll make a struct for all the related variables, and declare two of them:<br><br>
+
+<pre><font color=#ffffb0>typedef struct _MOD_VIBRATO_PARAMS
+{
+   s8 slide;          // Ranges +-64. Vibrato needs to shift down 1 bit
+   u8 speed    : 4;   // Added to tick each update
+   u8 depth    : 4;   // Multiplied by table value, and shifted down
+   u8 tick     : 6;   // Position in table. Full cycle is 64 ticks
+   u8 waveform : 2;   // Type of vibration. See MOD_WAVEFORM in Sound.c
+   u8 noRetrig : 1;   // If FALSE, reset tick to 0 when a new note is played
+   u8 pad      : 7;   // Unused, align to 4 bytes
+
+} MOD_VIBRATO_PARAMS;
+
+</font><font color=#d0d0d0>typedef struct _MOD_CHANNEL
+{
+   ...</font><font color=#ffffb0>
+   MOD_VIBRATO_PARAMS vibrato;      // Vibrates frequency
+   MOD_VIBRATO_PARAMS tremolo;      // Vibrates volume</font><font color=#d0d0d0>
+} MOD_CHANNEL;</font></pre>
+
+Then we'll make some 'helpers', which are really more of the whole effect. They basically do exactly what the long explanation up top says.<br><br>
+
+<pre>static void MODInitVibrato(MOD_UPDATE_VARS *vars, MOD_VIBRATO_PARAMS *vibrato)
+{
+   if(vars->param & 0xf != 0)
+      vibrato->depth = vars->param & 0xf;
+   if(vars->param >> 4 != 0)
+      vibrato->speed = vars->param >> 4;
+   if(vibrato->noRetrig == FALSE && vars->note != MOD_NO_NOTE)
+      vibrato->tick = 0;
+}
+
+static void MODUpdateVibrato(MOD_VIBRATO_PARAMS *vibrato)
+{
+      // Increment the tick. All wave types use a cycle of 0-63 on 
+      // the tick. Since it's a 6-bit bitfield, it wraps automatically.
+   vibrato->tick += vibrato->speed;
+   //vibrato->tick &= 63;   no need for this
+
+   switch(vibrato->waveform)
+   {
+      case MOD_WAVEFORM_SINE:
+         vibrato->slide = vibratoSineTab[vibrato->tick]*vibrato->depth >> 6;
+         if(vibrato->tick >= 32)
+            vibrato->slide = -vibrato->slide;
+         break;
+
+      case MOD_WAVEFORM_RAMP:
+         vibrato->slide = (32 - vibrato->tick)*vibrato->depth >> 3;
+         break;
+
+      case MOD_WAVEFORM_SQUARE:
+         vibrato->slide = vibrato->depth << 2;
+         if(vibrato->tick >= 32)
+            vibrato->slide = -vibrato->slide;
+         break;
+
+      case MOD_WAVEFORM_RANDOM:
+         vibrato->slide = vibratoRandomTab[vibrato->tick]*vibrato->depth >> 5;
+         break;
+   }
+}   // MODUpdateVibrato</pre>
+
+Then the effects themselves just call those functions, passing in either &vars->modChn->vibrato or &vars->modChn->tremolo, and then set the MOD_UPD_FLG_SET_FREQ or VOL, respectively. So simple it's not with the space.<br>
+Then we need to apply the slide amounts without modifying the actual period/volume memory. To do that, we'll go to where those are set to the mixer channels, MODHandleUpdateFlags, and create some temporary versions that we can modify:<br><br>
+
+<pre><font color=#d0d0d0>static void MODHandleUpdateFlags(MOD_UPDATE_VARS *vars)
+{
+   if(vars->updateFlags & MOD_UPD_FLG_SET_VOL)
+   {</font><font color=#ffffb0>
+         // Temporary volume to apply tremolo if needed
+      u32 vol = vars->modChn->vol;
+      if(vars->modChn->tremolo.slide != 0)
+         vol = MODVolumeSlide(vol, vars->modChn->tremolo.slide);</font><font color=#90f090>
+      vars->sndChn->vol = vol;</font><font color=#d0d0d0>
+   }
+
+   if( (vars->note != MOD_NO_NOTE) && 
+      (vars->updateFlags & MOD_UPD_FLG_PLAY_NOTE) )
+   {
+      MODPlayNote(vars);
+   }
+
+   if(vars->fineSlide != 0)
+   {
+         // This has to happen after the note is played
+      vars->modChn->period = 
+         MODPitchSlide(vars->modChn->period, vars->fineSlide);
+      vars->updateFlags |= MOD_UPD_FLG_SET_FREQ;
+   }
+
+   if(vars->updateFlags & MOD_UPD_FLG_SET_FREQ)
+   {</font><font color=ffffb0>
+      u32 period = vars->modChn->period;
+         // Shift down 1 bit here because the slide range needs to be 
+         // +-32 MOD periods, but the slide variable is +-64 because 
+         // tremolo reuses the same code and needs the larger range
+      if(vars->modChn->vibrato.slide != 0)
+         period = MODPitchSlide(period, vars->modChn->vibrato.slide >> 1);</font><font color=#d0d0d0>
+
+         // mixFreqPeroid is already shifted up 12 bits for fixed-point</font><font color=#90f090>
+      vars->sndChn->inc = div(sndVars.mixFreqPeriod, period);</font><font color=#d0d0d0>
+   }
+}   // MODHandleUpdateFlags</font></pre><br><br>
+
+
+
+<font size=+2><a name=waveform>Vibrato waveform (0xE4) and tremolo waveform (0xE7)</font><br><br>
+
+These set the waveform types used in the last effects. If the parameter is less than 4, it sets the waveform and sets the noRetrig flag to FALSE (so it DOES retrigger), if it's 4 to 7, set the waveform to param&3 and noRetrig to TRUE (so it continues with the previous tick). 8-15 are technically invalid, but we'll just AND everything off so they work (easier than checking for them).<br><br>
+
+<pre><font color=#d0d0d0>void MODFXSpecialRow(MOD_UPDATE_VARS *vars)
+{
+   u32 param = vars->modChn->param & 0xf;
+   switch(vars->modChn->param >> 4)
+   {
+      ...
+      case 0x4:   // Vibrato waveform</font><font color=#ffffb0>
+         vars->modChn->vibrato.waveform = param & 3;
+         vars->modChn->vibrato.noRetrig = (param & 8) ? TRUE : FALSE;</font><font color=#d0d0d0>
+         break;
+      ...
+      case 0x7:   // Tremolo waveform</font><font color=#ffffb0>
+         vars->modChn->tremolo.waveform = param & 3;
+         vars->modChn->tremolo.noRetrig = (param & 8) ? TRUE : FALSE;</font><font color=#d0d0d0>
+         break;
+      ...
+   }
+}</font></pre><br><br>
+
+
+
+<font size=+2><a name=finevolslide>Fine volslide (0xEA, 0xEB)</font><br><br>
+
+Slide the volume up or down once on the row-tick. Yawn.<br><br>
+
+<pre><font color=#d0d0d0>void MODFXSpecialRow(MOD_UPDATE_VARS *vars)
+{
+   u32 param = vars->modChn->param & 0xf;
+   switch(vars->modChn->param >> 4)
+   {
+      ...
+   case 0xA:   // Fine volume slide up</font><font color=#ffffb0>
+      vars->modChn->vol = MODVolumeSlide(vars->modChn->vol, param);
+      vars->updateFlags |= MOD_UPD_FLG_SET_VOL;</font><font color=#d0d0d0>
+      break;
+   case 0xB:   // Fine volume slide down</font><font color=#ffffb0>
+      vars->modChn->vol = MODVolumeSlide(vars->modChn->vol, -param);
+      vars->updateFlags |= MOD_UPD_FLG_SET_VOL;</font><font color=#d0d0d0>
+      break;
+      ...
+   }
+}</font></pre><br><br>
+
+
+
+<font size=+2><a name=notefx>Retrigger note (0xE9), note cut (0xEC), and note delay (0xED)</font><br><br>
+
+These are all fairly similar and very small. They all need a tick variable, but can never be active all at once, so we'll make a union for it (and shove the arpeggio tick in there too, while we're at it). Feel free to just make a single variable and use it for all of them if you like, I just think it's a little clearer this way.<br><br>
+
+One thing to note here is that retrig and delay just set MOD_UPD_FLG_PLAY_NOTE to trigger it. They're not supposed to do anything unless there was really a note specified on this row, but MODHandleUpdateFlags checks for that when handling the flag, so no need to bother checking here.<br><br>
+
+<pre><font color=#d0d0d0>typedef struct _MOD_CHANNEL
+{
+   ...</font><font color=#ffffb0>
+   union
+   {
+      u8 retrigTick;      // MOD ticks until note should retrigger
+      u8 noteCutTick;     // MOD ticks until note should cut
+      u8 noteDelayTick;   // MOD ticks until note should play</font><font color=#d0d0d0>
+      u8 arpeggioTick;    // Cycles 0-2 for original note and arpeggio notes</font><font color=#ffffb0>
+   }</font><font color=#d0d0d0>
+   ...
+} MOD_CHANNEL;
+
+void MODFXSpecialRow(MOD_UPDATE_VARS *vars)
+{
+   u32 param = vars->modChn->param & 0xf;
+   switch(vars->modChn->param >> 4)
+   {
+      ...
+   case 0x9:   // Retrigger note</font><font color=#ffffb0>
+      vars->modChn->retrigTick = param;</font><font color=#d0d0d0>
+      break;
+   case 0xC:   // Note cut</font><font color=#ffffb0>
+      vars->modChn->noteCutTick = param;</font><font color=#d0d0d0>
+      break;
+   case 0xD:   // Note delay</font><font color=#ffffb0>
+         // For this one, don't touch the mixer channel volume until the note 
+         // is actually played. Otherwise it would sound bad if there was a 
+         // quiet note and the volume jumped up before the delayed note started
+      vars->modChn->noteDelayTick = param;
+      vars->modChn->updateFlags &= ~(MOD_UPD_FLG_PLAY_NOTE | MOD_UPD_FLG_SET_VOL);</font><font color=#d0d0d0>
+      break;
+      ...
+   }
+}
+
+void MODFXSpecialMid(MOD_UPDATE_VARS *vars)
+{
+   u32 param = vars->modChn->param & 0xf;
+   switch(vars->modChn->param >> 4)
+   {
+      ...
+   case 0x9:   // Retrigger note</font><font color=#ffffb0>
+      if(--vars->modChn->retrigTick == 0)
+      {
+         vars->note = vars->modChn->note;                // MODHandleUpdateFlags will 
+         vars->updateFlags |= MOD_UPD_FLG_PLAY_NOTE;     // take care of playing this
+      }</font><font color=#d0d0d0>
+      break;
+   case 0xC:   // Note cut</font><font color=#ffffb0>
+      if(--vars->modChn->noteCutTick == 0)
+      {
+         vars->modChn->vol = 0;                          // Why actually stop it when
+         vars->updateFlags |= MOD_UPD_FLG_SET_VOL;       // it's easier to mute it?
+         vars->modChn->effect = vars->modChn->param = 0; // Did the deed, so stop the effect
+      }</font><font color=#d0d0d0>
+      break;
+   case 0xD:   // Note delay</font><font color=#ffffb0>
+      if(--vars->modChn->noteDelayTick == 0)
+      {
+           // Like retrig, but set the volume and only trigger once
+         vars->note = vars->modChn->note;
+         vars->updateFlags |= MOD_UPD_FLG_PLAY_NOTE | MOD_UPD_FLG_SET_VOL;
+         vars->modChn->effect = vars->modChn->param = 0;
+      }</font><font color=#d0d0d0>
+      break;
+      ...
+   }
+}</font></pre><br><br>
+
+
+
+<font size=+2><a name=patloop>Pattern loop (0xE6)</font><br><br>
+
+This loops a section a specified number of times (only within the current pattern). First give it a 0 parameter to set the loop point, then use it again with the number of times to jump back to that point. An example:
+
+<pre>Row
+10  C-2 01 E60
+11  G-2 01 ---
+12  C-3 01 E64</pre>
+
+That will set the loop point at row 10, and then play those three notes 5 times in a row (once through, then loop 4 times). Each channel needs to track its <i>loop position</i> and <i>loops left</i> individually, so you can get multiple pattern loops going on at once (confusing as it would be). So, they go into MOD_CHANNEL:<br><br>
+
+<pre><font color=#d0d0d0>typedef struct _MOD_CHANNEL
+{
+   ...</font><font color=#ffffb0>
+   u8 patLoopPos;     // Set to current row when an E60 effect is used
+   u8 patLoopCount;   // Number of times left to loop</font><font color=#d0d0d0>
+   ...
+} MOD_CHANNEL;
+
+void MODFXSpecialRow(MOD_UPDATE_VARS *vars)
+{
+   u32 param = vars->modChn->param & 0xf;
+   switch(vars->modChn->param >> 4)
+   {
+      ...
+   case 0x6:   // Pattern loop</font><font color=#ffffb0>
+      if(param == 0)
+         vars->modChn->patLoopPos = sndMod.curRow;
+      else
+      {
+         if(vars->modChn->patLoopCount == 0)         // First time we hit it.
+            vars->modChn->patLoopCount = param+1;    // +1 because we decrement 
+                                                     // before checking
+         if(--vars->modChn->patLoopCount != 0)
+         {
+               // Loop back to the stored row in this order next tick
+            sndMod.breakRow  = vars->modChn->patLoopPos;
+            sndMod.nextOrder = sndMod.curOrder;           // Don't advance the order
+            sndMod.curRow    = MOD_PATTERN_ROWS;          // This triggers the break
+            vars->modChn->patLoopCount--;
+         }
+      }</font><font color=#d0d0d0>
+      break;
+      ...
+   }
+}</font></pre><br><br>
+
+
+
+<font size=+2><a name=patdelay>Pattern delay (0xEE)</font><br><br>
+
+This causes a delay of the time it would take to play <i>param</i> rows. All notes on the row with the effect are played, just the next row doesn't come until it's finished. Very easy, add a countdown variable in the MOD struct, set it in the effect, and in MODUpdate when the tick overflows and it's time to play a new row, check the cuontdown before doing anything.
+
+<pre><font color=#d0d0d0>typedef struct _MOD
+{
+   ...</font><font color=#ffffb0>
+   u8 patDelay;   // Rows left to wait (normally 0)</font><font color=#d0d0d0>
+} MOD;
+
+void MODFXSpecialRow(MOD_UPDATE_VARS *vars)
+{
+   u32 param = vars->modChn->param & 0xf;
+   switch(vars->modChn->param >> 4)
+   {
+      ...
+   case 0xE:   // Pattern delay</font><font color=#ffffb0>
+      sndMod.patDelay = param;</font><font color=#d0d0d0>
+      break;
+      ...
+   }
+}
+
+void MODUpdate()
+{
+   if(++sndMod.tick >= sndMod.speed)
+   {
+      sndMod.tick = 0;</font><font color=#ffffb0>
+      if(sndMod.patDelay == 0)
+      {</font><font color=#d0d0d0>
+         if(sndMod.curRow++ >= MOD_PATTERN_ROWS)
+         {
+            if(MODSeek(sndMod.nextOrder, sndMod.breakRow) == FALSE)
+               return;   // FALSE = song ended
+            sndMod.curRow++;
+         }
+         MODProcessRow();</font><font color=#ffffb0>
+      }
+      else
+      {
+         sndMod.patDelay--;
+      }</font><font color=#d0d0d0>
+   }
+   else
+   {
+      MODUpdateEffects();
+   }
+}   // MODUpdate</font></pre><br><br>
+
+
+
+<font size=+2><a name=lastone>Undefined #2 (0xEF)</font><br><br>
+
+Finally, the last effect! It doesn't do anything :-P<br><br><br><br>
+
+
+
+<font size=+2><a name=theend>3. Closing</font><br><br>
+
+Well there you have it, everything you need to know, in full detail, to make a MOD player. I didn't really intend for it to get so long, but that's the way of such things. Hopefully it will at least serve as a useful reference for the specifics of each effect, because no one else seems to document them quite completely (and now I know why).<br>
+Nonetheless I had a great time writing this series, taking something I'm familiar with and trying to keep the code as compact and hack-free as possible.<br><br>
+
+However, just because it's finished doesn't mean the series has to end. There's still plenty of stuff to do if I ever decide to do it. Like, going down to the wonderful, soul-tormenting world of hardcore mixer optimization, adding nice things like pattern compression, cool things like filtering and reverb (also called burning CPU cycles), figuring out that cursed glissando effect, exploring other music formats (S3M/XM/IT), and porting the player to the Nintendo DS!<br>
+That last one is kind of troublesome, because the DS uses all hardware channels, meaning no buffering. Instead, we have to change the channel settings on the fly in a timer interrupt, which is generally pretty fishy business. I think I'll give it a try though, it should be fun challenge getting it to act right.<br><br>
+
+
+Until next time, happy coding!<br><br>
+
+<a href="sound8.zip">Example project for Day 8 (297KB)</a><br><br>
+
+<center><b><a href="../index.html">Home</a>, <a href="sound7.html">Day 7</a>, <font color=gray>Day 9</font></b></center>
+
+</body>
+
+</html>

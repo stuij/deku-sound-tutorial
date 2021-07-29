@@ -1,0 +1,289 @@
+<html>
+
+<head>
+<title>Sound Mixing - Deku's Tree of Art</title>
+</head>
+
+<body text=#ffffff link=#80ffff vlink=#80e0f0 bgcolor=#c09973 bg=graphics/bg.gif>
+<center><font size="+3" color=#604040><b>Sound on the Gameboy Advance</b></font><br><font size="+2" color = #4080c0>Day 4</font></center><br><br>
+
+Back to it. Last time I hit the 64KB limit of text that notepad can deal with, so I figured I better split it up. Then I went through and edited out a bunch of stuff that was't really necessary, and it ended up back down to 23KB anyway. Today is still only converting the data, but as with most things, it's easier to think about than to explain, and easier to explain than to code. Check out the example for all the little coding details. It's only a single C++ file today, because the converter is only 805 lines. Not quite big enough to bother splitting up, and it's basically a C file anyway except that I like new and delete.<br><br>
+
+<a href="sound4.html#converter">1. Converter design and sound effects</a><br>
+<a href="sound4.html#output">2. Output</a><br><br>
+
+<a href="sound4.zip">Example project</a><br><br><br><br>
+
+
+
+<font size=+2><a name=converter>1. Converter design and sound effects</font><br><br>
+
+This is possibly the hardest part of the whole converter, deciding what sort of format to output for a player we haven't even written yet.<br>
+To start, we'll define our goals. We want to take a bunch of MOD files, remove all duplicate samples, and output a .s file for all the data, a .c file for all the tables to access that data, and a .h file to define identifiers for each entry in the tables and such. The data could go into the .c file, but it would take painfully long to compile. Outputting data in assembly format is very similar to making C arrays, and it will assemble in seconds even if we do have huge amounts of data.<br>
+Next, we need to decide how to specify the list of files to convert. There are two good ways I know how to do this.<br>
+The first way is to to make a text file listing the path/filename of all the files we want to convert. This is nice because we can also define options that can be set per-file and just put them after the filenames. Parsing the file could be a bit of a hassle, but not too bad.<br>
+The second way is to shove all our files into one folder and pass this folder as an argument to the converter. This is nice because we don't have to add new songs to the text file, only place them in the folder and call the converter. We'll use this method, because it's so easy.<br><br>
+
+The code to search a directory for files is a little funky, but this will do it:<br><br>
+
+<pre>#include &lt;direct.h&gt;   // Directory functions
+#include &lt;io.h&gt;       // Search functions
+
+   // fileTable is a pre-allocated array of maxFiles char*'s.
+   // typeStr should be "*.mod"
+   // Returns the number of files loaded.
+u32 GetFileList(char *dirName, char **fileTable, u32 maxFiles, char *typeStr)
+{
+   char   oldDir[256];
+   u32    fileCount;
+   struct _finddata_t findData;
+   int    hSearch;
+   int    hFile;
+
+      // Remember the old working directory
+   _getcwd(oldDir, 256);
+
+      // Set current working directory to the argument
+   int result = _chdir(dirName)
+   if(result == 0)
+   {
+      fprintf(stderr, "Folder does not exist\n");
+      exit(1);
+   }
+
+      // Do standard library stuff, I just looked it up in MSDN
+   hSearch = _findfirst(typeStr, &findData);
+   hFile = hSearch;
+
+   curFile = 0;
+   while(hFile != -1 && curFile < maxFiles)
+   {
+         // Allocate buffer for string, +1 for null
+      fileTable[curFile] = new char[strlen(findData.name) + 1];
+      ASSERT(fileTable[curFile] != NULL);   // Handle running out of memory
+      strcpy(fileTable[curFile], findData.name);
+
+      curFile++;
+      hFile = _findnext(hSearch, &findData);
+   }
+   _findclose(hFile);
+
+      // curFile also happens to be the number of files loaded
+   return curFile;
+}</pre>
+
+To remove duplicate samples, instead of loading the data directly for each sample, we will make a table of "sample datas", and have each SAMPLE_HEADER store an index into that instead of a pointer to the raw data. Each time we load a new sample, we'll search through the table for an exact copy, and if we find one, we'll just return that index instead of adding a new entry. The specifics of this will be covered later.<br><br>
+
+Now, something I have not mentioned yet is sound effects. We will need some way of storing the data for them as well. Again, two good ways to go about this. The first is to flag certain samples in the MOD files to be used as SFX. Pros: Easy organization of all sound effects, and can listen to them in ModPlug and such. Can recycle instruments from songs as SFX. Cons: Because we're using MOD, all samples are locked to 8363Hz.<br>
+The other way is to store them as .wav files and put them in our conversion folder along with the MODs (or a secondary folder for better organization). Pros: .wav files are usually what sound effects are created as, so no need to go add them into MODs as samples. Frequency is variable. Cons: We'd have to learn the .wav file format too.<br><br>
+
+We'll go the easy route again and use the first method. So, we need to decide how to flag which samples are to be used as SFX. 3 ways this time.<br>
+1. If a song has no pattern data, use all its samples as SFX and don't store it as a song. This is how the popular Krawall system does it, and it's a good method.<br>
+2. Add a special flag that we specify in the name of a sample. Something like _SFX at the end, so names would be like Kaboom_SFX. Since sample names will be used as identifiers in the .h file we output, we'll have to chop this flag off. It also leaves you with less room for the actual name, but if that becomes an issue you can make it a single character flag. Something that's not valid in a C label, like *, so then we'd have Kaboom*. The bad part: It's a hassle to add this flag to every sample you want to use.<br>
+3. Add the * flag to the song name, to signal that all of its samples should be used as SFX. This has the same effect as 1, but it's easier programatically, because you don't have to step through the patterns to see if there are any notes played.<br><br>
+
+All these methods are good this time, so it's your call which you want to use. I will go with 3, because it will take less code than 1, and 2 requires a lot more work adding the flag to every sample. In reality, I would go with 1 because it's less work later on, not having to flag all the songs by hand.<br>
+To handle SFX, we'll make a big array of SAMPLE_HEADER*'s, and allocate a new SAMPLE_HEADER for every sample in every SFX-flagged song.<br><br>
+You may not know it yet, but that's almost everything necessary to do the entire conversion process. It's just a matter of putting it all together, so here it is in pseudo-C, to save space (along with a struct definition that we'll be using to keep track of all the unique sample datas):<br><br>
+
+<pre>typedef struct _SAMPLE_DATA
+{
+   s8  *data;
+   u32 length;   // This is the length of the data in bytes, used only during the 
+                 //  conversion process to compare sample datas against eachother
+
+} SAMPLE_DATA;
+
+main:
+{
+   Store argument in dirName
+   Allocate a big array of char*'s in fileTable
+   numFiles = GetFileList(dirName, fileTable, lengthOfFileTable);
+   Allocate numFiles MOD_HEADER's in gModHeader
+   Allocate big number of SAMPLE_DATA's in gSmpData (don't bother making these pointers 
+                                                     since the whole struct is only 8 bytes)
+   Allocate big number of SAMPLE_HEADER*'s in gSfx
+
+   for i=0 to numFiles
+   {
+      open fileTable[i] in modFile
+      check sig to make sure it's a 4-channel MOD
+      seek back to start, load name
+      <a href="sound3.html#samples">LoadSamples(&gModHeader[i], modFile);</a>   \
+      <a href="sound3.html#orders">LoadOrders(&gModHeader[i], modFile);</a>     }- These are all basically the same as in <a href="sound3.html">Day 3</a>
+      <a href="sound3.html#patterns">LoadPatterns(&gModHeader[i], modFile);</a>  /
+      LoadSmpDatas(&gModHeader[i], modFile);   <- This is new, but similar to <a href="sound3.html#smpdata">last time</a>
+
+      check name for * flag
+      if set
+      {
+         copy all non-zero-length SAMPLE_HEADER's from gModHeader[i] into new entries in gSfx
+         delete gModHeader[i] (smpDatas have already been stored in global table, and won't be affected)
+      }
+   }
+}
+
+void LoadSmpDatas(MOD_HEADER *modHeader, FILE *modFile)
+{
+   for i=0 to 31
+   {
+      if(modHeader->sample[i].length != 0)
+      {
+          gSmpData[smpDataCount].length = modHeader->sample[i].length*2
+            (remember length is still stored as half to fit in 16 bits)
+          Allocate gSmpData[smpDataCount].length in gSmpData[smpDataCount].data
+          read gSmpData[smpDataCount].length bytes from modFile into gSmpData[smpDataCount].data
+          smpDataCount++;
+      }
+   }
+}
+
+</pre>
+
+And that's the overall flow of our converter. See the <a href="sound4.zip">example program</a> for a full C version.<br><br><br><br>
+
+
+
+<font size=+2><a name=output>2. Output</font><br><br>
+
+The final leg of writing the converter, creating all the data tables for the player to use.<br>
+Here are the 3 global tables we'll make:<br><br>
+
+<pre>MOD_HEADER dModTable[];
+SAMPLE_HEADER dSfxTable[];
+s8 *dSmpDataTable[];</pre>
+
+Except here, we'll make a couple of modifications to the MOD_HEADER struct on the GBA side, to save a little ROM space. Instead of storing 31 samples and 128 orders in every MOD_HEADER, we'll use pointers to variable sized tables. That way, each MOD_HEADER only uses the amount of space it actually needs (note: this is only for the GBA program, the converter will still use the old fixed size arrays).<br>
+Those variable sized tables will look like this:<br><br>
+
+<pre>typedef struct _SAMPLE_HEADER
+{
+   u16  length;
+   u8   finetune;
+   u8   vol;
+   u16  loopStart;
+   u16  loopLength;
+
+   const s8   *smpData;   // Pointer to sample data in ROM
+
+} SAMPLE_HEADER;
+
+SAMPLE_HEADER dMod1SampleTable[] = { 
+   {   // sample 1
+      123,                // length (still half the real length) (I'll use 123 for a placeholder number)
+      0,                  // finetune (0-15)
+      64,                 // vol (0-64)
+      0,                  // loopStart (also half)
+      0,                  // loopLength (also half)
+      dSmpData123,        // smpData (pointer to the sample data in ROM)
+   },
+   { /*Sample 2 data*/ },
+   { /*Sample 3 data*/ },
+   // ...
+};
+u8 dMod1OrderTable[] = { 1, 2, 50, 1, 3, ... };</pre>
+u8 *dMod1PatternTable[] = { dMod1Pattern1, dMod1Pattern2, ...};
+
+dMod1Pattern1 and such will be defined in the assembly data file (as well as the sample datas, which will come a bit later). These all need to be declared extern before being referenced here.<br><br>
+
+Then the dModTable[] will look like this:<br><br>
+
+<pre>typedef struct _MOD_HEADER
+{
+   const SAMPLE_HEADER *sample;
+   const u8 *order;
+   const u8 **pattern;
+   u8 orderCount;
+
+} MOD_HEADER;
+
+MOD_HEADER dModTable[] = {
+   { dMod0SampleTable, dMod0OrderTable, dMod0PatternTable, 123 }, 
+   { dMod1SampleTable, dMod1OrderTable, dMod1PatternTable, 123 }, 
+   { dMod2SampleTable, dMod2OrderTable, dMod2PatternTable, 123 }, 
+   ...
+};</pre>
+
+The dSfxTable of SAMPLE_HEADER's is exactly like the MOD sample tables, except looping through the gSfx table instead of gModHeader[i].sample, so if I was going to show what it will look like, I'd only have to copy/paste the example above.<br><br>
+
+To output all of this, we'll use fprintf. It makes life easy. For example, to output the sample data table, we'd only have to do like:
+
+<pre>fprintf(outFile, "const dSmpDataTable[] = {");
+for(i = 0; i < gSmpDataCount; i++)
+{
+   if((i & 7) == 0)   // insert a newline every 8 samples so they fit on the screen better
+      fprintf(outFile, "\n");
+
+   fprintf(outFile, "dSmpData%i", i);
+}</pre>
+
+If you haven't used the printf functions before, %i means the next argument is an integer. If you have more than one %type, they match up to the arguments after the string in the order they appear. For example, fprintf(outFile, "%i%i%i", 1, 2, 3) will print "123" in the file. Other useful types are %x, which is a hex number (or %#x, which will prefix it with a 0x), and %s, which treats the corresponding argument as a string (char*, NULL-terminated).<br><br>
+
+Next comes the assembly file. This may scare some of you who have never used assembly before, but it's nor much worse than generating C tables. All we'll be putting here are the patterns and sample datas, because they're the only things that take way too long to compile otherwise. It's perfectly possible to do all those other tables in assembly too, just a little more confusing.<br><br>
+
+Here is the general look of an assembly table:<br><br>
+
+<pre>.section .rodata
+.global dMod0Pattern0
+.align 2
+dMod0Pattern0:
+.byte 1, 2, 3, 4, 5, 6, 7, 8
+.byte 8, 7, 6, 5, 4, 3, 2, 1</pre>
+
+Stepping through one line at a time, the first .section line only really needs to be done at the top of the file, to specify that everything following should go into ROM, until a new secton is specified. You can specify it for each new table if you want, but it won't make any difference.<br>
+.global is used to define a global symbol that other files will be able to reference. It doesn't necessarily have to be right here with the actual dMod0Pattern0 label, all the .globals could be clumped up top to get them out of the way and it would still work fine. I usually put them with the labels, but it really makes no difference.<br>
+Next up is .align 2. I'm still not too clear on how .align works myself, but I know 2 will get you at least word aligned. It's either align to 2 words, or align to 1<<2 bytes, either of which is fine. Don't try .align 4 though, I feared using assembly data tables for the longest time because I thought I had to use .align 4, and .align 4 in the .rodata section causes errors. It's fine in other sections, but not .rodata. Don't know why, don't really care, because it's a waste of space padding to more than 4 bytes anyway (.align 4 is 16 bytes, I think).<br>
+The next line, dMod0Pattern0:, is the actual label that shows where the data starts. Same thing as an identifier in C.<br>
+Next comes the actual data. The .byte here means the following numbers should be stored right here as (you guessed it,) bytes. One little hassle is that you have to re-specify the type after every newline, but it's really no big deal when generating the file with the converter program anyway. Another hassle is that you can't leave a trailing comma at the end. Just use an if.<br>
+And that's all there is to it. For the next table, just do the exact same thing. No need to specify that the previous table ended or anything. All the assembly tables we do will be like this:<br><br>
+
+<pre>for(curMod = 0; curMod < gModCount; curMod++)
+{
+   for(curPattern = 0; curPattern < gModHeader[curMod].patternCount; curPattern++)
+   {
+      fprintf(outFile, "\n.global dMod%iPattern%i", curMod, curPattern);
+      fprintf(outFile, "\n.align 2");
+      fprintf(outFile, "\ndMod%iPattern%i:", curMod, curPattern);
+
+      for(i = 0; i < 1024; i++)   // Patterns are always 1024 bytes
+      {
+         if((i & 7) == 0)
+            fprintf(outFile, "\n.byte ");
+         else
+            fprintf(outFile, ", ");
+
+         fprintf(outFile, "i, ", gModHeader[curMod].pattern[curPattern][i]);
+      }
+   }
+}</pre>
+
+That's it for the assembly file. Sample datas are done essentially the same, so I won't go over them. The last thing to finish up our 'little' conveter is the .h file with defines for each of the songs and SFX. The names we give to them will be taken from the MOD files. For now, we'll require that all songs, and any samples that are to be used as SFX, have valid C labels for names. If your musician wants to use spaces instead of underscores or whatever, you can add a function to go through the names and replace any spaces with underscores before outputting to the .h. More nice stuff you can do is remove any invalid characters, use default names if there isn't any name in the first place, add numbers to the end if you get duplicate names (harder than it sounds), but I won't bother with any of that here.<br><br>
+
+We'll prefix the defines with MOD_ and SFX_ just for general purpose organization, so the header will looks like this:
+
+<pre>#define MOD_TheNameOfTheFirstSong 0
+#define MOD_AndTheSecond 1
+...
+
+#define SFX_FirstSFX 0
+#define SFX_SecondSFX 1
+...</pre>
+
+These are dead easy to output using the %s parameter type in fprintf:<br><br>
+
+<pre>for(i = 0; i < gModCount; i++)
+{
+   fprintf(outFile, "\ndefine MOD_%s %i", gModHeader[i].name, i);
+}</pre>
+
+And similar for gSfx.<br><br>
+
+Yay! Done! Did I ever mention I hate converters? Well now it's out of the way. Next time is the music player itself, where speed matters and confusion abounds as you try to implement all the effects. See you there!<br><br>
+
+<a href="sound4.zip">Example project for Day 4</a><br><br>
+
+<center><b><a href="../index.html">Home</a>, <a href="sound3.html">Day 3</a>, <a href="sound5.html">Day 5</a></b></center>
+
+</body>
+
+</html>

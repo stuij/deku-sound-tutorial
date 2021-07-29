@@ -1,0 +1,197 @@
+<html>
+
+<head>
+<title>Sound Mixing - Deku's Tree of Art</title>
+</head>
+
+<body text=#ffffff link=#80ffff vlink=#80e0f0 bgcolor=#c09973 bg=graphics/bg.gif>
+<center><font size="+3" color=#604040><b>Sound on the Gameboy Advance</b></font><br><font size="+2" color = #4080c0>Day 2</font></center><br><br>
+
+Howdy, and welcome to day 2 of the sound tutorial. In day 1, we learned how to play sounds, and how to set up a sound buffer system on the GBA. Today, we'll be putting that buffer to use with a mixer capable of playing sounds at different volumes and frequencies.<br><br>
+
+<a href="sound2.html#volume">1. Volume</a><br>
+<a href="sound2.html#resampling">2. Resampling</a><br>
+<a href="sound2.html#mixing">3. Mixing</a><br><br>
+
+<a href="sound2.zip">Example project</a><br><br><br><br>
+
+
+
+<font size=+2><a name=volume>1. Volume</font><br><br>
+
+This is a no-brainer, but still it deserves a word. Changing volume is done by a straight fixed-point multiply.<br><br>
+
+<pre>newSample = oldSample * volume / volumeLevels;</pre>
+
+volumeLevels will of course be a multiple of 2, so we can use bitshifting to prevent the divide. Practically all tracker music formats use 64 levels, so we will too. Then the volume formula becomes<br><br>
+
+<pre>newSample = oldSample * volume >> 6;</pre>
+
+Much nicer. Customarily, you never boost a sound's amplitude higher than the original. You can do it, but then you'll get overflow all over the place, unless your sample never goes all the way up or down to the maximum values, and then you're wasting accuracy that could give you a better quality sample. Amplifying a sound to use the full range is called normalizing, and can be done with ModPlug tracker. Then you can set the volume back down to make it sound like it did before, or set it to full volume and have it back up as high as you ever could have without overflowing. Thus, volume higher than the original wouldn't do you much good.<br><br><br><br>
+
+
+
+<font size=+2><a name=resampling>2. Resampling</font><br><br>
+
+Also known as changing the pitch. If you've ever written a program to scale a bitmap, you know how to do this. In fact, it's even easier here than on a bitmap, because it's 1-dimensional.<br>
+To resample, you need to be able to advance more or less than a full sample at a time. For example, to play a sound at half its original frequency, you advance 1/2 a sample for each output sample in the buffer. To do this, you need to make your position a fixed-point variable too. You can get away with 8 bits for the fractional portion and 24 for the integer, but you can get some slightly off-pitch notes due to the lack of accuracy. I use 16.16 because it gives you plenty of accuracy, and is a nice even number, but really, you probably wouldn't ever be able to tell any difference once you get past 12 bits or so, and it doesn't make any difference code-wise. The problem with higher accuracy is that you have less range on your integer. For example, with 16.16, your integer can only get up to 65535 before it overflows. Doesn't this limit the length of your sounds to 64K, you may ask? Yes, but you can get around it. Instead of always keeping your data pointer set to the start of the data, you add the integer portion of the position onto it every mixing session, and chop the integer off the position.<br>
+That's a little more advanced though, so for the first example, we'll go in the middle and use a 12-bit fraction. That leaves 20 bits of integer, so you can have sounds up to 1MB, which should be plenty most of the time.<br>
+Expanding on the example from last time, here's now to do a looping sound with resampling and volume:<br><br>
+
+<pre>
+typedef struct _SOUND_CHANNEL
+{
+   s8 *data;   // pointer to the raw sound data in ROM
+   u32 pos;    // current position in the data (20.12 fixed-point)
+   u32 inc;    // increment (20.12 fixed-point)
+   u32 vol;    // volume (0-64, sort of 1.6 fixed-point)
+   u32 length; // length of the whole sound (20.12 fixed-point)
+
+} SOUND_CHANNEL;
+
+SOUND_CHANNEL channel;
+
+void SoundMix()
+{
+   s32 i;
+
+   for(i = 0; i < soundVars.mixBufferSize; i++)
+   {
+       // copy a sample
+      soundVars.curMixBuffer[i] = channel.data[ channel.pos>>12 ] * channel.vol >> 6;
+      channel.pos += channel.inc;
+
+       // loop the sound if it hits the end
+      if(channel.pos >= channel.length)
+      {
+         channel.pos = 0;
+      }
+   }
+}</pre>
+
+Not too much different, but it can do a whole lot more. Don't worry about being stuck with a looping sound, we'll deal with that in a minute. First, you need to know how to properly calculate the increment value. To start off, we'll resample a sound to play at its original frequency, even though it's being mixed into the 18157Hz double buffer. Say your sound is 8000Hz, which is a little less than half of 18157. You need to know how many 8000Hz samples to advance for each 18157Hz sample. This is done by dividing the original frequency by the new one, in this case 8000/18157. Of course, you want to convert to fixed point before the division, so since we're using 12 bits of accuracy for now, that becomes (8000<<12)/18157 = 1804. That's a little less than half of 1<<12 (4096), so we can see that our formula is correct.<br>
+We won't go into playing different notes yet, but incase you're curious, all you do is use a lookup table and multiply the frequency by that.<br><br><br><br>
+
+
+
+<font size=+2><a name=mixing>3. Mixing</font><br><br>
+
+This is where 90% of your sound-related CPU time will be spent, and so, it needs to be well-optimized. But before that, it needs to work. Here would also be a good time to talk about sounds ending and NOT looping.<br>
+The reason I always had the sound loop before was so you'd always have something to copy into the buffer. If the sound ends, then you have to fill the buffer with zeroes. Not a big deal, but I didn't want to clutter the examples with it. This becomes even more of a problem when you mix several channels. You need to zero the whole buffer before filling it, so you don't have to worry about sounds ending. If you go through a whole lot of hassle, you can get around filling it unless no sounds at all are playing, but it's not worth the trouble.<br>Another thing about sounds ending is that you need some sort of a flag to tell if a channel is active or not. Plenty of ways to go about this. Adding a var to the channel structure, adding a bitfield with one bit per channel to the global sound vars structure, or my favorite, setting the channel's data pointer to 0. You'll never be playing a sound from a null pointer, so you can safely use it as a marker for inactive channels. This also makes things easier and ever so slightly faster, because you'd have to load and check a variable in any of those cases, but then if the channel IS active, you already have the data pointer loaded, so you don't have to load it again.<br>Then for looping sounds, you need to be able to set the loop position to somewhere else than the start of the sound every time. Usually the first thought is to store the loop position and then do something like<br><br>
+
+<pre>if(channel.pos >= channel.length)
+   channel.pos = channel.loopStart;</pre>
+
+While that does sort of work, it is not correct, and will sound distorted if you have a very short loop. When you're looping a sound, you want to make it seem like the looped part has just been copied and pasted past the end forever. When you set the position directly to the loop start, you lose any fractional portion of the position, and possibly even part of the integer if your increment is greater than 1 (that is, a fixed-point 1, or 1<<12 for the example). It also causes probles with that idea I mentioned earlier of updating the data pointer each frame. The solution is to instead store the LENGTH of the looped portion, and subtract that from the position when you run over. The loop length is just channel.length - channel.loopStart.<br><br>
+
+<pre>if(channel.pos >= channel.length)
+   channel.pos -= channel.loopLength;</pre>
+
+Then another problem comes up. What if your increment is bigger than the loop length? Each time you add the increment and then see that you're past the end of the sample, you subtract the loop length only to discover that you're still past the end. Bad bad bad. Doesn't happen too often, but if you like chip music, you'll be  seeing a lot of very short loops, and it could happen. At the cost of a small bit of speed, you can combat this problem by using a while loop rather than an if:<br><br>
+
+<pre>while(channel.pos >= channel.length)
+   channel.pos -= channel.loopLength;</pre>
+
+Then to further complicate things, you need a way of telling if a sound should stop or loop when it hits the end. Again, my favorite is to use a special value in one of the existing variables. This time I say if loop length is 0, then stop, otherwise loop. Logically you would never use a loop length of 0, because you wouldn't back up at all, and so would play on past the end of your data.<br><br>
+
+Now to put this all together.<br>
+One last thing is that when mixing sounds, you can obviously overflow 8 bits, because if you happen to have 2 samples above 63, say both are 100, then you get 200, which when read back as a signed 8-bit number is -56. Definitely not what you want, and will sound horrible. To combat this, you can either divide by the total number of channels being mixed, so you know you'll never run over, or you can clip the output values back to the range -128 to 127. Dividing is easier, but you lose volume, and therefore accuracy, increasing the background noise. Clipping is more expensive CPU-wise, and can still cause noticable distortion if you get a whole lot of channels going at once. Either way, you can speed the whole mixing process up a lot by using an intermediate 16-bit buffer, and dealing with overflow at the end. That way you save a shift for every sample for every channel. With 4 channels running, that's already 304*4, or 1216 cycles. Not a whole lot, but certainly worth doing.<br>
+Here is the new mixer that supports up to 4 channels at a time, unoptimized and untested, written right here in good old notepad:<br><br>
+
+<pre>typedef struct _SOUND_CHANNEL
+{
+   s8 *data;       // pointer to the raw sound data in ROM (0 for inactive channel)
+   u32 pos;        // current position in the data (20.12 fixed-point)
+   u32 inc;        // increment (20.12 fixed-point)
+   u32 vol;        // volume (0-64, sort of 1.6 fixed-point)
+   u32 length;     // length of the whole sound (20.12 fixed-point)
+   u32 loopLength; // length of looped portion (20.12 fixed-point, 0 for no loop)
+
+} SOUND_CHANNEL;
+
+SOUND_CHANNEL channel[4];
+
+void SoundMix()
+{
+   s32 i, curChn;
+   s16 tempBuffer[304];
+
+    // zero the buffer
+   i = 0;
+   Dma3(tempBuffer, &i, soundVars.mixBufferSize*sizeof(s16)/4, DMA_WORD | DMA_ENABLE);
+
+   for(curChn = 0; curChn < 4; curChn++)
+   {
+      SOUND_CHANNEL *chnPtr = &channel[curChn];
+
+       // check special active flag value
+      if(chnPtr->data != 0)
+      {
+          // this channel is active, so mix its data into the intermediate buffer
+         for(i = 0; i < soundVars.mixBufferSize; i++)
+         {
+             // mix a sample into the intermediate buffer
+            tempBuffer[i] += chnPtr->data[ chnPtr->pos>>12 ] * chnPtr->vol;
+            chnPtr->pos += chnPtr->inc;
+
+             // loop the sound if it hits the end
+            if(chnPtr->pos >= chnPtr->length)
+            {
+                // check special loop on/off flag value
+               if(chnPtr->loopLength == 0)
+               {
+                   // disable the channel and break from the i loop
+                  chnPtr->data = 0;
+                  i = soundVars.mixBufferSize;
+               }
+               else
+               {
+                   // loop back
+                  while(chnPtr->pos >= chnPtr->length)
+                  {
+                     chnPtr->pos -= chnPtr->loopLength;
+                  }
+               }
+            }
+         } // end for i = 0 to bufSize
+      } // end data != 0
+   } // end channel loop
+
+    // now downsample the 16-bit buffer and copy it into the actual playing buffer
+   for(i = 0; i < soundVars.mixBufferSize; i++)
+   {
+       // >>6 to divide off the volume, >>2 to divide by 4 channels to prevent overflow
+      soundVars.curMixBuffer[i] = tempBuffer[i] >> 8;
+   }
+}</pre>
+
+Lots of new ideas to absorb, but still, that's not a whole lot of code, and it is a fully functional mixer.<br><br>Here is an <a href="sound2.zip">example project</a> putting everything we've done so far to use. Mostly what you need to see are Sound.c/.h, Irq.c and Main.c. Also, SndData.S is a raw sample, converted from Data\Piano.raw using b2x. Piano.raw was converted from Data\Piano.wav by saving it as raw PCM data in CoolEdit.<br><br>
+This mixer is a little slow though. One way you can speed it up a little is by skipping the check for wether the sound ended, unless you know it's actually going to be ending this frame. To find out if it will be ending, do this:<br><br>
+
+<pre>if(chnPtr->pos + chnPtr->inc*soundVars.mixBufferSize >= chnPtr->length)
+{
+    // somewhere before the end of the mixing, this channel will pass the end, 
+    // so do the loop as before, checking if it ends every sample
+}
+else
+{
+    // after inc gets added all 304 times, the position will still be less than 
+    // the length, so there's absolutely no point in checking it every sample. 
+
+    // New loop looks like this:
+
+   for(i = 0; i < soundVars.mixBufferSize; i++)
+   {
+       // mix a sample into the intermediate buffer
+      tempBuf[i] += chnPtr->data[ chnPtr->pos>>12 ] * chnPtr->vol;
+      chnPtr->pos += chnPtr->inc;
+   }
+}</pre>
+
+Right there you saved hundreds more cycles per channel in most cases. Still, this algorithm itself is not that great. Even if you write it in ASM, you will get very little speed improvement. The real benefit of ASM is that you have a whole bunch of registers to play with, and that allows you to use new algorithms that a compiler would not be able to comprehend well enough to make fast. For now, we will use this mixer, and proceed to writing a music player, cause that's what's coming your way next time in day 3. Stay tuned!<br><br>
+
+<center><b><a href="../index.html">Home</a>, <a href="sound1.html">Day 1</a>, <a href="sound3.html">Day 3</a></b></center>
+
+</body>
+
+</html>

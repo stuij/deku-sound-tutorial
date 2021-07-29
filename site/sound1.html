@@ -1,0 +1,178 @@
+<html>
+
+<head>
+<title>Sound Mixing - Deku's Tree of Art</title>
+</head>
+
+<body text=#ffffff link=#80ffff vlink=#80e0f0 bgcolor=#c09973 bg=graphics/bg.gif>
+<center><font size="+3" color=#604040><b>Sound on the Gameboy Advance</b></font><br><font size="+2" color = #4080c0>Day 1</font></center><br><br>
+After how many replies I've made on the <a href="http://forum.gbadev.org">GBADev forums</a> about how to write sound mixers, I've finally decided to write up an article series on them. <br>
+I'll start out with the basics, just getting sounds to play and creating a good framework to work off of, and work my way into writing a full fledged music player and delving into the world of hardcore assembly optimizations (i.e. the fun part).<br><br>
+
+<a href="sound1.html#sound">1. What is sound?</a><br>
+<a href="sound1.html#data">2. How is sound data stored on a computer?</a><br>
+<a href="sound1.html#hardware">3. The GBA sound hardware</a><br>
+<a href="sound1.html#buffer">4. Buffering your sounds</a><br>
+<br><br><br><br>
+
+
+
+<font size=+2><a name=sound>1. What is sound?</font><br><br>
+
+Sound is simply a vibration of the air. When you drop something, like a fork or a spoon, it hits the floor and makes a clink sound, right? That's because the impact with the floor causes the metal to vibrate back and forth at a very high speed (as well as bouncing the whole object back into the air), and when the object vibrates, it causes the air around it to vibrate in the same pattern. When those air molecules vibrate, they bump into other nearby air molecules, which in turn bump into their neighbors, until all the air molecules in the room are boncing back and forth. When those vibrating air molecules bump into your eardrums, you hear a sound.<br><br><br><br>
+
+
+
+<font size=+2><a name=data>2. How is sound data stored on a computer?</font><br><br>
+
+The PCM sound data used by the GBA's sound chip is stored as a stream of signed binary numbers, and is the same as a normal .wav file on your computer. These numbers represent the pressure of the air, measured at constant intervals of time. For example, if you have an 8KHz, 8-bit .wav file, each byte represents the air pressure measured 1/8000, or 0.000125 seconds apart. A value of 0 means the air is still and silent. Positive and negative numbers represent high and low air pressure relative to the silent level.<br>
+Now back on the physics side of all this, what we really care about is that sounds behave like waves. Just imagine waves on the surface of a lake. When you toss a stone into the lake, it makes rings that move outward. These rings are visible because the water is either raised up or dipped down from the rest of the surface. Guess what? That's just like the high and low air pressure differences of a sound wave. So what? They're rings in the water, and we already have a .wav file with the sound waves recorded, so we don't care. Rightfully so, you can play that .wav file on the GBA just like it is and it will sound fine. But what if you want to mix 2 .wav files together and play them on the same GBA sound channel at the same time? Then you have to throw 2 stones into the lake and try to figure out what happens to the rings they make.<br>
+Well here it is: When the crests (high parts) of 2 waves run into eachother, they push up even higher. When the troughs (low parts) run together, they dip down even deeper. When a crest and a trough collide, they cancel out, going back to the original level of the water.<br>
+If you look at your .wav file again, you'll see a similarity between all this. The silent 0 value represents the water level of the lake, a positive number represents a crest, raised up higher than the base level, and a negative number is dipped down from the base level. If 2 positive numbers run together, you get a bigger positive number. 2 negatives gives you a more negative number, and a positive and negative will go back toward 0.<br>
+What mathematical operation does this behave like? Addition, that's what. All you have to do to mix PCM samples is add them together.<br>
+However, we first need to learn how to play a single sound. Baby steps, you know?<br><br><br><br>
+
+
+
+<font size=+2><a name=hardware>3. The GBA sound hardware</font><br><br>
+
+The GBA has 2 direct sound channels, named A and B (note: this has nothing to do with the Direct Sound portion of Microsoft's DirectX).<br>Each channel is fed by a 16 byte FIFO buffer, which you can send 4 bytes at a time to by writing data to REG_SGFIFOA and REG_SGFIFOB. Now, your first impulse will likely be to set up a timer interrupt to write to these registers every 1/8000 seconds (assuming you're playing an 8000Hz sound). Actually that would be 1/2000, because you have to write 4 bytes at a time to the register. I think you could even write 4 words all one after another to fill up the full 16 byte buffer, meaning you'd only have to interrupt every 1/500 seconds, but I haven't tried it myself. Still, that's a lot of interrupting, and you'll most likely be playing at a much higher frequency than 8KHz when you get a mixer running.<br>
+So, to combat this problem, the engineers who designed the hardware added in special features to the DMA controller to prevent the need for an interrupt altogether. DMA channels 1 and 2 have this special sound mode, which causes them to fire up and transfer 16 bytes of data whenever the sound FIFO has played its last byte of data. Bits 12 and 13 set the DMA mode. Mode 0 is just a regular DMA that fires off immediately, mode 1 causes it to wait until VBlank occurs and then transfer, mode 2 is HBlank, and mode 3 is sound mode. Normally, you'll want to use these settings for the sound DMA:<br><br>
+
+<pre>REG_DM1CNT_H = DMA_DEST_FIXED | DMA_REPEAT | DMA_WORD | DMA_MODE_FIFO | DMA_ENABLE;</pre>
+
+Or in hex, 0xB640. With that, it will just keep on going forever until you stop it by unsetting the enable bit (DMAxCNT are write only, so just zero the whole reg). You also need to set up a timer to tell the FIFO how often to play a sample. The FIFO plays a sample every time the timer overflows. The GBA's hardware timers run at the CPU frequency of 16.7MHz, so you need to figure out how to make it overflow at the same frequency as the sound you're playing. If you look at it like a word problem in math class, it becomes obvious: What is the number of CPU cycles per sound sample played? The answer: CPU freq / sound freq.<br>
+But that only gives you the number of CPU cycles to wait between samples, not the timer value. Since the timers are 16-bit, they overflow when they hit 65536, so all you have to do is subtract the number of cycles to wait from 65536 and you have it. So, the final formula is:<br><br>
+
+<pre>REG_TM0D = 65536 - (16777216 / soundFreq);</pre>
+
+Why timer 0? Because the sound hardware can only use timers 0 and 1, and I picked 0 because I wanted to :-)<br>
+Both hardware channels can use the same timer, so you can play stereo sounds without losing 2 timers. They CAN'T use the same DMA though, so if you want stereo sound in your game, kiss both DMA 1 and 2 goodbye.<br>
+Anyway, to select which timer a sound channel uses, use REG_SOUNDCNT_H (sometimes called REG_SGCNT0_H). Check GBATEK or the CowBite spec for details on the bits, but for reference, bit 10 is the sound A timer selection, and bit 14 is sound B timer select. They are both the same, and independent of eachother, so you could, for example, set bit 10 and clear bit 14 to use timer 1 for sound A and timer 0 for sound B.<br>Here is a normal setting for mono sound playing on sound A with timer 0:<br><br>
+
+<pre>REG_SOUNDCNT_H = SOUNDA_VOLUME_100 | SOUNDA_LOUT | SOUNDA_ROUT | SOUNDA_FIFORESET;</pre>
+
+Or 0x0604. Then you have to set bit 7 of REG_SOUNDCNT_X (sometimes called REG_SGCNT1) to enable sound. With that, you should be able to make a simple sound demo. You'll need to get some sound data to play though. I don't know any good GBA-specific converter tools, but you can use some programs like GoldWave or CoolEdit to save raw sound data and include that in your project however you like. So, to start it all up:<br><br>
+
+<pre>REG_SOUNDCNT_H = SOUNDA_VOLUME_100 | SOUNDA_LOUT | SOUNDA_ROUT | SOUNDA_FIFORESET;   // = 0x0604
+REG_SOUNDCNT_X = SOUND_ENABLE;   // = 0x80
+REG_TM0D = 65536 - (16777216 / soundFreq);
+REG_TM0CNT = TIMER_ENABLE;   // = 0x80
+REG_DM1SAD = (u32) soundDataAddr;
+REG_DM1DAD = (u32) &(REG_SGFIFOA);
+REG_DM1CNT_H = DMA_DEST_FIXED | DMA_REPEAT | DMA_WORD | DMA_MODE_FIFO | DMA_ENABLE;   // = 0xB640</pre>
+
+The length of the DMA is ignored, so no need to bother setting it.<br>
+Now, that will keep on playing right past the end of your sound, through the rest of the data in your ROM, and out into The Great Land of Lost Pointers. To stop it right at the end of your sound, you need some way of keeping track of how long it's been since you started it, and then write 0 to REG_DM1CNT_H when it's done. The easiest way is to set up a timer and cascade it with your sound timer. That way, it will increment once every time a sample is played, and then you can set it to interrupt after your sample's length.<br><br>
+
+<pre>REG_TM1D = 65536 - sampleLength;<br>
+REG_TM1CNT = TIMER_CASCADE | TIMER_INTERRUPT | TIMER_ENABLE;</pre>
+
+And set up the timer 1 interrupt function to set REG_DM1CNT_H to 0. Beware though, if you try to loop a sound using this method, you can get clicks because the DMA transfers 16 bytes at a time, so the length of your sound must be a multiple of 16. No worries though, you'll be scrapping this method right away anyhow.<br><br><br><br>
+
+
+
+<font size=+2><a name=buffer>4. Buffering your sounds</font><br><br>
+
+This is where it's at. How to build a framework upon which you will create your sound system. As soon as this is done, your involvement with the GBA's hardware will be pretty much over, and you can begin the ever-so-fun task of writing a sound mixer and music player.<br><br>
+
+The easiest kind of buffering for use on GBA is double buffering. With it, you have 2 distinct buffers, each the same size, and use an interrupt to decide when to swap them out. For now, we'll do it with a VBlank interrupt, because it's the safest. Doing it on a timer means opening up possibilities of another interrupt happening first and delaying the swap, causing a click. Now, timing to a VBlank interrupt will cause very frequent clicks if you're not careful. Only a select few frequencies time out perfectly. Calculating them is based on the fact that the GBA's CPU runs exactly 280896 cycles per frame. If you take an integer factor of that number for your timer overflow cycle, then you get perfect timing and no clicks. Furthermore, the number must be a multiple of 16 to make it past the 16 byte DMA transfer dilemma. Here is the famous table of values that work:<br><br>
+
+<pre>
+      REG_TM0D                    frequency    buffer size
+         |                            |            |
+         V                            V            V
+
+Timer = 62610 = 65536 - (16777216 /  5734), buf = 96
+Timer = 63940 = 65536 - (16777216 / 10512), buf = 176
+Timer = 64282 = 65536 - (16777216 / 13379), buf = 224
+Timer = 64612 = 65536 - (16777216 / 18157), buf = 304
+Timer = 64738 = 65536 - (16777216 / 21024), buf = 352
+Timer = 64909 = 65536 - (16777216 / 26758), buf = 448
+Timer = 65004 = 65536 - (16777216 / 31536), buf = 528
+Timer = 65073 = 65536 - (16777216 / 36314), buf = 608
+Timer = 65118 = 65536 - (16777216 / 40137), buf = 672
+Timer = 65137 = 65536 - (16777216 / 42048), buf = 704</pre>
+
+Not too beautifully formatted, but the info is there. The first value is what you actually set in REG_TM0D, then there's the frequency, which is in Hz, and the last value is the number of samples per frame, so you'll need 2 buffers, each that size, and swap them out. A good average quality/speed tradeoff is 18157Hz with a buffer of 304 bytes, which uses a timer value of 64612.<br>
+Now you need a VBlank interrupt to swap the buffers. It should look something like this:<br><br>
+
+<pre>typedef struct _SOUND_VARS
+{
+   s8 *mixBufferBase;
+   s8 *curMixBuffer;
+   u32 mixBufferSize;
+   u8 activeBuffer;
+
+} SOUND_VARS;
+
+SOUND_VARS soundVars;
+
+void SndVSync()
+{
+   if(soundVars.activeBuffer == 1)	// buffer 1 just got over
+   {
+       // Start playing buffer 0
+      REG_DM1CNT_H = 0;
+      REG_DM1SAD = (u32)soundVars.mixBufferBase;
+      REG_DM1CNT_H = 0xB640;
+
+       // Set the current buffer pointer to the start of buffer 1
+      soundVars.curMixBuffer = soundVars.mixBufferBase + soundVars.mixBufferSize;
+
+      soundVars.activeBuffer = 0;
+   }
+   else	// buffer 0 just got over
+   {
+       // DMA points to buffer 1 already, so don't bother stopping and resetting it
+
+       // Set the current buffer pointer to the start of buffer 0
+      soundVars.curMixBuffer = soundVars.mixBufferBase;
+      soundVars.activeBuffer = 1;
+   }
+}</pre>
+
+New global structure to group all the sound variables into one big bunch. Here's an explanation of its members:<br>
+mixBufferBase is the start of BOTH mixing buffers, which are placed back to back. This makes it a little easier, because you only need one pointer, and only have to swap buffers every other frame, because once buffer 0 has finished playing, the DMA is pointing directly at buffer 1 already, so it would be silly to stop it and set the address to where it already was.<br>
+soundVars.mixBufferSize is the buffer size from the table. Assuming we're using 18157Hz, it would be 304 right here.<br>
+soundVars.curMixBuffer is where you'll be copying data into next. It will not be played until next frame, so you have plenty of time to fill it.<br>
+soundVars.activeBuffer is just a flag to tell which buffer is which. You could also just compare soundVars.curMixBuffer to soundVars.mixBufferBase, or anything else you want, just as long as you know which buffer is being played and which is safe to mix in.<br><br>
+
+So now you have a double buffer running. The next step is to fill it. How do you do that? You copy. Here's a simple way to play a looping sound:<br><br>
+
+<pre>typedef struct _SOUND_CHANNEL
+{
+   s8 *data;   // pointer to the raw sound data in ROM
+   u32 pos;    // current position in the data
+   u32 length; // length of the whole sound
+
+} SOUND_CHANNEL;
+
+SOUND_CHANNEL channel;
+
+void SoundMix()
+{
+   s32 i;
+
+   for(i = 0; i < soundVars.mixBufferSize; i++)
+   {
+       // copy a sample
+      soundVars.curMixBuffer[i] = channel.data[ channel.pos++ ];
+
+       // loop the sound if it hits the end
+      if(channel.pos >= channel.length)
+      {
+         channel.pos = 0;
+      }
+   }
+}</pre>
+
+Basically a memcpy. What's interesting is the new struct, SOUND_CHANNEL. This code snippet assumes that it was initialized somewhere else, but it will be an important part of your mixer, and should be designed specifically to be friendly to your code.<br>In the end it will have more members, you'll have a whole array of them, and you'll add all the data[pos]'s together before storing them in the buffer. That may seem simple, and it is, but there are a few hang ups that make things a little tricky (not to mention making it fast).<br><br>
+
+This concludes day 1 of the tutorial. Next up: Mixing sounds together, and resampling them to play at different pitches, even though the double buffer is always running at the same frequency. See you there!<br><br>
+
+<center><b><a href="../index.html">Home</a>, <a href="sound2.html">Day 2</a></b></center>
+
+</body>
+
+</html>
