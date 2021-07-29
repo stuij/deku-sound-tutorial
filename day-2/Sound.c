@@ -101,7 +101,7 @@ void SndMix()
 	i = 0;
 	Dma3(tempBuffer, &i, sndVars.mixBufferSize*sizeof(s16)/4, DMA_MEMSET32);
 
-	for(curChn = 0; curChn < SOUND_MAX_CHANNELS; curChn++)
+	for(curChn = 0; curChn < SND_MAX_CHANNELS; curChn++)
 	{
 		SOUND_CHANNEL *chnPtr = &sndChannel[curChn];
 

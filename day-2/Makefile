@@ -1,4 +1,6 @@
-PATH=C:\DevKit~1;C:\DevKit~1\Bin;%PATH%
+CC = arm-none-eabi-gcc
+LD = arm-none-eabi-ld
+OBJCOPY = arm-none-eabi-objcopy
 
 NAME = Example
 CARMFLAGS	= -c -O2 -marm -mthumb-interwork -ffreestanding
@@ -17,26 +19,25 @@ SRC_C_ARM_FILES =\
 Irq.c
 
 SRC_S_FILES =\
-Crt0.S\
-Math.S\
-SndData.S
+Crt0.s\
+Math.s\
+SndData.s
 
-O_FILES = $(SRC_S_FILES:.S=.o) $(SRC_C_FILES:.c=.o) $(SRC_C_ARM_FILES:.c=.o)
+O_FILES = $(SRC_S_FILES:.s=.o) $(SRC_C_FILES:.c=.o) $(SRC_C_ARM_FILES:.c=.o)
 
 all : $(NAME).gba
 
 $(NAME).gba : $(NAME).elf
-	objcopy -v -O binary $(NAME).elf $(NAME).gba
+	$(OBJCOPY) -v -O binary $(NAME).elf $(NAME).gba
 
 $(NAME).elf : $(O_FILES)
-	ld $(LDFLAGS) -o $(NAME).elf $(O_FILES)
+	$(LD) $(LDFLAGS) -o $(NAME).elf $(O_FILES)
 
 $(SRC_C_FILES:.c=.o) : $(SRC_C_FILES)
-	gcc $(CTHUMBFLAGS) $(@:.o=.c) -o $@
+	$(CC) $(CTHUMBFLAGS) $(@:.o=.c) -o $@
 
 $(SRC_C_ARM_FILES:.c=.o) : $(SRC_C_FILES)
-	gcc $(CARMFLAGS) $(@:.o=.c) -o $@
+	$(CC) $(CARMFLAGS) $(@:.o=.c) -o $@
 
-$(SRC_S_FILES:.S=.o) : $(SRC_S_FILES)
-	gcc $(ASFLAGS) $(@:.o=.S) -o $@
-
+$(SRC_S_FILES:.s=.o) : $(SRC_S_FILES)
+	$(CC) $(ASFLAGS) $(@:.o=.s) -o $@
