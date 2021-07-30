@@ -1,35 +1,51 @@
-#define WIN32_LEAN_AND_MEAN	// so windows.h doesn't clutter things too badly
-#include <windows.h>	// for typedefs
+#include <dirent.h>
 #include <stdlib.h>		// for stuff
 #include <stdio.h>		// for file IO
-#include <direct.h>		// for directory functions
-#include <io.h>			// for file searching
-#include <conio.h>		// for getch
+#include <string.h>
+#include <termios.h>
+#include <unistd.h>
 
-	// These are just to decide what size of pointer arrays to make at the start
-	// The only reason not to make them huge is so we don't waste too much 
-	// memory on unused pointers, but you can make them as big as you want
+// These are just to decide what size of pointer arrays to make at the start
+// The only reason not to make them huge is so we don't waste too much 
+// memory on unused pointers, but you can make them as big as you want
 #define MAX_SONGS			1024
 #define MAX_SFX				16384
 #define MAX_SAMPLE_DATAS	16384
 
-	// Define the flag to search for in the MOD name
+// Define the flag to search for in the MOD name
 #define MOD_SFX_FLAG		'*'
 
-	// Invalid index for sample headers to use
+// Invalid index for sample headers to use
 #define INVALID_SMP_DATA	0xffffffff
 
-	// For patterns to specify that there is no note. We have 5 octaves, 
-	// so only notes 0-59 are used, and 63 is the highest that still fits 
-	// in the same number of bits
+// For patterns to specify that there is no note. We have 5 octaves, 
+// so only notes 0-59 are used, and 63 is the highest that still fits 
+// in the same number of bits
 #define MOD_NO_NOTE			63
-	// Only 31 samples, which we refer to as 0-30
+// Only 31 samples, which we refer to as 0-30
 #define MOD_NO_SAMPLE		31
 
-	// Define our assert. The Cleanup function in here frees up any 
-	// dynamic memory claimed so far. There are probably better ways 
-	// to do it, but this is pretty easy.
-#define ASSERT(cond) \
+// Define our assert. The Cleanup function in here frees up any 
+// dynamic memory claimed so far. There are probably better ways 
+// to do it, but this is pretty easy.
+
+#define FALSE 0
+#define TRUE 1
+
+// emulate getch() from the DOS conio.h header
+int getch(void) {
+    struct termios oldattr, newattr;
+    int ch;
+    tcgetattr( STDIN_FILENO, &oldattr );
+    newattr = oldattr;
+    newattr.c_lflag &= ~( ICANON | ECHO );
+    tcsetattr( STDIN_FILENO, TCSANOW, &newattr );
+    ch = getchar();
+    tcsetattr( STDIN_FILENO, TCSANOW, &oldattr );
+    return ch;
+}
+
+#define ASSERT(cond)      \
 	if((cond) == FALSE) { \
 		fprintf(stdout, "\nASSERT FAILED\n\t%s\n\tLine %i\n\n", __FILE__, __LINE__); \
 		Cleanup(); \
@@ -92,7 +108,7 @@ typedef struct _GLOBAL_STRUCT
 // Prototypes for functions
 
 void GeneratePeriodTable();
-u32 GetFileList			(char **fileTable, u32 maxFiles, char *typeStr);
+u32 GetFileList			(char **fileTable, u32 maxFiles);
 void LoadMod			(MOD_HEADER *modHeader, char *fileName);
 void LoadSamples		(MOD_HEADER *modHeader, FILE *modFile);
 void LoadOrders			(MOD_HEADER *modHeader, FILE *modFile);
@@ -137,10 +153,10 @@ int main(int argc, char **argv)
 	strcpy( dirName, argv[1] );
 
 		// Remember the old working directory
-	_getcwd(oldDir, 256);
+	getcwd(oldDir, 256);
 
 		// Set current working directory to the argument
-	result = _chdir(dirName);
+	result = chdir(dirName);
 	if(result != 0)
 	{
 		fprintf(stderr, "Folder does not exist\n");
@@ -152,7 +168,7 @@ int main(int argc, char **argv)
 	ASSERT( globals.fileTable != NULL );
 	memset( globals.fileTable, 0, MAX_SONGS*sizeof(char*) );
 
-	globals.fileCount = GetFileList(globals.fileTable, MAX_SONGS, "*.mod");
+	globals.fileCount = GetFileList(globals.fileTable, MAX_SONGS);
 
 	globals.modHeader = new MOD_HEADER[globals.fileCount];
 	ASSERT( globals.modHeader != NULL );
@@ -220,21 +236,21 @@ int main(int argc, char **argv)
 
 	fprintf(stdout, "Writing C file...\n");
 	strcpy			(tempStr, dirName);
-	strcat			(tempStr, "\\SndData.c");
+	strcat			(tempStr, "SndData.c");
 	WriteCFile		(tempStr);
 
 	fprintf(stdout, "Writing ASM file...\n");
 	strcpy			(tempStr, dirName);
-	strcat			(tempStr, "\\SndData.s");
+	strcat			(tempStr, "SndData.s");
 	WriteAsmFile	(tempStr);
 
 	fprintf(stdout, "Writing Header file...\n");
 	strcpy			(tempStr, dirName);
-	strcat			(tempStr, "\\SndData.h");
+	strcat			(tempStr, "SndData.h");
 	WriteHeaderFile	(tempStr);
 
 		// Restore old working directory before exiting
-	_chdir(oldDir);
+	chdir(oldDir);
 
 	fprintf(stdout, "Success! Press any key to continue.\n");
 	getch();
@@ -258,39 +274,56 @@ void GeneratePeriodTable()
 
 }	// GeneratePeriodTable
 
+int ends_with_mod(const char *txt) {
+  int txt_len = strlen(txt);
+  if (txt_len > 4) {
+    if ((*(txt + txt_len - 4) == '.') &&
+        ((*(txt + txt_len - 3) == 'm') || (*(txt + txt_len - 3) == 'M')) &&
+        ((*(txt + txt_len - 2) == 'o') || (*(txt + txt_len - 2) == 'O')) &&
+        ((*(txt + txt_len - 1) == 'd') || (*(txt + txt_len - 1) == 'D'))) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 	////////////////////////////////////////////////////////////////////
 	// GetFileList: Searches current directory for files of specified type
 	// fileTable is a pre-allocated array of maxFiles char*'s.
 	// typeStr should be "*.mod"
 	// Returns the number of files loaded.
 	////////////////////////////////////////////////////////////////////
-u32 GetFileList(char **fileTable, u32 maxFiles, char *typeStr)
+u32 GetFileList(char **fileTable, u32 maxFiles)
 {
-	u32		curFile;
-	struct	_finddata_t findData;
-	int		hSearch;
-	int		hFile;
+   char cwd[PATH_MAX];
+   if (getcwd(cwd, sizeof(cwd)) == NULL) {
+     perror("getcwd() error");
+     return 0;
+   }
+   printf("Current working dir: %s\n", cwd);
+   
+  DIR *dir;
+  struct dirent *ent;
+  if ((dir = opendir(cwd)) == NULL) {
+    printf("Unable to open directory %s...\n", cwd);
+    return 0;
+  }
 
-		// Do standard library stuff, I just looked it up in MSDN
-	hSearch = _findfirst(typeStr, &findData);
-	hFile = hSearch;
+  u32 curFile = 0;
+  while ((ent = readdir (dir)) != NULL) {
+    printf ("%s\n", ent->d_name);
+    if (ends_with_mod(ent->d_name)) {
+      fileTable[curFile] = new char[strlen(ent->d_name) + 1];
+      ASSERT(fileTable[curFile] != NULL);   // Handle running out of memory
+      strcpy(fileTable[curFile], ent->d_name);
 
-	curFile = 0;
-	while(hFile != -1 && curFile < maxFiles)
-	{
-			// Allocate buffer for string, +1 for null
-		fileTable[curFile] = new char[strlen(findData.name) + 1];
-		ASSERT(fileTable[curFile] != NULL);   // Handle running out of memory
-		strcpy(fileTable[curFile], findData.name);
+      curFile++;
+    }
+  }
+  closedir (dir);
 
-		curFile++;
-		hFile = _findnext(hSearch, &findData);
-	}
-	_findclose(hFile);
-
-		// curFile also happens to be the number of files loaded
-	return curFile;
-
+  // curFile also happens to be the number of files loaded
+  return curFile;
 }	// GetFileList
 
 void LoadMod(MOD_HEADER *modHeader, char *fileName)
