@@ -1,0 +1,14 @@
+html, body {
+  margin: 0 auto;
+  width: 800;
+  color: #EEEADE;
+  background-color: #111521;
+}
+
+a:link {
+  color: #80ffff;
+}
+
+a:visited {
+  color: #80e0f0;
+}
