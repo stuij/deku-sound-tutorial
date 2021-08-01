@@ -1,0 +1,7 @@
+*.o
+*.elf
+*.map
+*.json
+SndData.s
+SndData.c
+SndData.h
