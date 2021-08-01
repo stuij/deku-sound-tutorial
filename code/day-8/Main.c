@@ -11,7 +11,7 @@
 #include "Irq.h"
 #include "Misc.h"
 #include "Sound.h"
-#include "Data\SndData.h"
+#include "Data/SndData.h"
 
 	// input vars, to detect wether a button was 
 	// pressed just now, or being held down since last frame

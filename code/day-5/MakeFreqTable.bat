@@ -1,1 +1,0 @@
-FreqTable FreqTable.txt
