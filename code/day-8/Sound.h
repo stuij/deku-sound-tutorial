@@ -2,7 +2,7 @@
 // 10/08/04 - Changed MOD_NO_SAMPLE from 0 to 31
 //          - Added structures for MOD player
 //          - Modified SndMix to take a number of samples, added MODUpdate
-//            to update the music, and SndUpdate to do the deciding how many 
+//            to update the music, and SndUpdate to do the deciding how many
 //            samples to mix at a time, and call MODUpdate as needed
 // ----------------------
 
@@ -11,181 +11,165 @@
 
 #include "Gba.h"
 
-
 // ----- Constants -----
 
-#define SND_MAX_CHANNELS		4
-#define SND_CHN_INVALID			0xff
+#define SND_MAX_CHANNELS 4
+#define SND_CHN_INVALID 0xff
 
-typedef enum _SND_FREQ
-{
-	SND_FREQ_5734,
-	SND_FREQ_10512,
-	SND_FREQ_13379,
-	SND_FREQ_18157,
-	SND_FREQ_21024,
-	SND_FREQ_26758,
-	SND_FREQ_31536,
-	SND_FREQ_36314,
-	SND_FREQ_40137,
-	SND_FREQ_42048,
-	SND_FREQ_43959,
+typedef enum _SND_FREQ {
+  SND_FREQ_5734,
+  SND_FREQ_10512,
+  SND_FREQ_13379,
+  SND_FREQ_18157,
+  SND_FREQ_21024,
+  SND_FREQ_26758,
+  SND_FREQ_31536,
+  SND_FREQ_36314,
+  SND_FREQ_40137,
+  SND_FREQ_42048,
+  SND_FREQ_43959,
 
-	SND_FREQ_NUM
+  SND_FREQ_NUM
 
 } SND_FREQ;
 
-typedef enum _MOD_STATE
-{
-	MOD_STATE_STOP,
-	MOD_STATE_PLAY,
-	MOD_STATE_PAUSE,
+typedef enum _MOD_STATE {
+  MOD_STATE_STOP,
+  MOD_STATE_PLAY,
+  MOD_STATE_PAUSE,
 
 } MOD_STATE;
-
-
 
 // ----- Structures -----
 
 typedef void (*MOD_CALLBACK)(u32 param, BOOL bRowTick);
 
-typedef struct _SOUND_CHANNEL
-{
-	const s8	*data;
-	u32			pos;
-	u32			inc;
-	u32			vol;
-	u32			length;
-	u32			loopLength;
+typedef struct _SOUND_CHANNEL {
+  const s8 *data;
+  u32 pos;
+  u32 inc;
+  u32 vol;
+  u32 length;
+  u32 loopLength;
 
 } SOUND_CHANNEL;
 
-typedef struct _SOUND_VARS
-{
-	s8		*mixBufferBase;
-	s8		*curMixBuffer;
-	u32		mixBufferSize;
-	u16		mixFreq;
-	u32		mixFreqPeriod;			// 12-bit fixed-point
-	s32		samplesUntilMODTick;	// 12-bit fixed-point
-	u32		samplesPerMODTick;		// 12-bit fixed-point
-	u8		channelBlocked;			// One bit per mixer channel
-	u8		activeBuffer;
+typedef struct _SOUND_VARS {
+  s8 *mixBufferBase;
+  s8 *curMixBuffer;
+  u32 mixBufferSize;
+  u16 mixFreq;
+  u32 mixFreqPeriod;       // 12-bit fixed-point
+  s32 samplesUntilMODTick; // 12-bit fixed-point
+  u32 samplesPerMODTick;   // 12-bit fixed-point
+  u8 channelBlocked;       // One bit per mixer channel
+  u8 activeBuffer;
 
 } SOUND_VARS;
 
+// This is the layout of the sample info in ROM
+typedef struct _SAMPLE_HEADER {
+  u16 length;
+  u8 finetune;
+  u8 vol;
+  u16 loopStart;
+  u16 loopLength;
 
-	// This is the layout of the sample info in ROM
-typedef struct _SAMPLE_HEADER
-{
-	u16  length;
-	u8   finetune;
-	u8   vol;
-	u16  loopStart;
-	u16  loopLength;
-
-	const s8   *smpData;   // Pointer to sample data in ROM
+  const s8 *smpData; // Pointer to sample data in ROM
 
 } SAMPLE_HEADER;
 
-	// This is the MOD data layout in ROM
-typedef struct _MOD_HEADER
-{
-	const SAMPLE_HEADER *sample;
-	const u8 *order;
-	const u8 **pattern;
+// This is the MOD data layout in ROM
+typedef struct _MOD_HEADER {
+  const SAMPLE_HEADER *sample;
+  const u8 *order;
+  const u8 **pattern;
 
-	u8 orderCount;
-	u8 pad[3];
+  u8 orderCount;
+  u8 pad[3];
 
 } MOD_HEADER;
 
-	// Used in the MOD_CHANNEL struct below, to make recycling code for 
-	// the vibrato and tremolo effects easier
-typedef struct _MOD_VIBRATO_PARAMS
-{
-	s8 slide;			// Ranges +-64. Vibrato needs to shift down 1 bit
-	u8 speed	: 4;	// Added to tick each update
-	u8 depth	: 4;	// Multiplied by table value, and shifted down
-	u8 tick		: 6;	// Position in table. Full cycle is 64 ticks
-	u8 waveform	: 2;	// Type of vibration. See MOD_WAVEFORM in Sound.c
-	u8 noRetrig	: 1;	// If FALSE, reset tick to 0 when a new note is played
-	u8 pad		: 7;	// Unused, align to 4 bytes
+// Used in the MOD_CHANNEL struct below, to make recycling code for
+// the vibrato and tremolo effects easier
+typedef struct _MOD_VIBRATO_PARAMS {
+  s8 slide;        // Ranges +-64. Vibrato needs to shift down 1 bit
+  u8 speed : 4;    // Added to tick each update
+  u8 depth : 4;    // Multiplied by table value, and shifted down
+  u8 tick : 6;     // Position in table. Full cycle is 64 ticks
+  u8 waveform : 2; // Type of vibration. See MOD_WAVEFORM in Sound.c
+  u8 noRetrig : 1; // If FALSE, reset tick to 0 when a new note is played
+  u8 pad : 7;      // Unused, align to 4 bytes
 
 } MOD_VIBRATO_PARAMS;
 
-	// This is the data we need to keep track of for each channel 
-	// while playing the song, stored in RAM
-typedef struct _MOD_CHANNEL
-{
-	u16 period;				// Current period of note being played
+// This is the data we need to keep track of for each channel
+// while playing the song, stored in RAM
+typedef struct _MOD_CHANNEL {
+  u16 period; // Current period of note being played
 
-	u8 note;				// Current note
-	u8 sample;				// Last sample used on this channel
-	u8 vol;					// Current volume
-	u8 finetune;			// Finetune level (0-15)
+  u8 note;     // Current note
+  u8 sample;   // Last sample used on this channel
+  u8 vol;      // Current volume
+  u8 finetune; // Finetune level (0-15)
 
-	u8 effect;				// Current effect (set to 0 each row)
-	u8 param;				// Current param (set to 0 each row)
+  u8 effect; // Current effect (set to 0 each row)
+  u8 param;  // Current param (set to 0 each row)
 
-	s8 volslideSpeed;		// Current volume slide speed
-	u8 portaSpeed;			// Current pitch slide up/down speed
-	u8 tonePortaNote;		// Current note to slide toward
-	u8 tonePortaSpeed;		// Speed to slide toward it
-	u8 patLoopPos;			// Set to current row when an E60 effect is used
-	u8 patLoopCount;		// Number of times left to loop
+  s8 volslideSpeed;  // Current volume slide speed
+  u8 portaSpeed;     // Current pitch slide up/down speed
+  u8 tonePortaNote;  // Current note to slide toward
+  u8 tonePortaSpeed; // Speed to slide toward it
+  u8 patLoopPos;     // Set to current row when an E60 effect is used
+  u8 patLoopCount;   // Number of times left to loop
 
-	union
-	{
-		u8 retrigTick;		// MOD ticks until note should retrigger
-		u8 noteCutTick;		// MOD ticks until note should cut
-		u8 noteDelayTick;	// MOD ticks until note should play
-		u8 arpeggioTick;	// Cycles 0-2 for original note and arpeggio notes
-	};
+  union {
+    u8 retrigTick;    // MOD ticks until note should retrigger
+    u8 noteCutTick;   // MOD ticks until note should cut
+    u8 noteDelayTick; // MOD ticks until note should play
+    u8 arpeggioTick;  // Cycles 0-2 for original note and arpeggio notes
+  };
 
-	MOD_VIBRATO_PARAMS vibrato;		// Vibrates frequency
-	MOD_VIBRATO_PARAMS tremolo;		// Vibrates volume
+  MOD_VIBRATO_PARAMS vibrato; // Vibrates frequency
+  MOD_VIBRATO_PARAMS tremolo; // Vibrates volume
 
 } MOD_CHANNEL;
 
-	// This is all the data for the currently playing song, in RAM
-typedef struct _MOD
-{
-	const SAMPLE_HEADER *sample;	// Pointer to table of samples in ROM
-	const u8 **pattern;				// Pointer to table of pointers to patterns
-	const u8 *order;				// Array of pattern numbers to play
-	MOD_CALLBACK callback;			// User function called by 0xE0 effects
+// This is all the data for the currently playing song, in RAM
+typedef struct _MOD {
+  const SAMPLE_HEADER *sample; // Pointer to table of samples in ROM
+  const u8 **pattern;          // Pointer to table of pointers to patterns
+  const u8 *order;             // Array of pattern numbers to play
+  MOD_CALLBACK callback;       // User function called by 0xE0 effects
 
-	const u8 *rowPtr;				// Current position in current pattern, for quick access
+  const u8 *rowPtr; // Current position in current pattern, for quick access
 
-	u8 state;						// MOD_STATE enum (stopped/playing/paused)
+  u8 state; // MOD_STATE enum (stopped/playing/paused)
 
-	u8 speed;
-	u8 tick;						// When this gets to speed, process a new row and reset it to 0
+  u8 speed;
+  u8 tick; // When this gets to speed, process a new row and reset it to 0
 
-	u8 curRow;						// When this gets to 64, move to the next order and reset to 0
+  u8 curRow; // When this gets to 64, move to the next order and reset to 0
 
-	u8 orderCount;
-	u8 curOrder;					// When this gets to orderCount, stop the song
-	u8 nextOrder;					// Normally curOrder+1, unless an effect changes it
-	u8 breakRow;					// Starting row when order changes (normally 0)
-	u8 patDelay;					// Rows left to wait (normally 0)
+  u8 orderCount;
+  u8 curOrder;  // When this gets to orderCount, stop the song
+  u8 nextOrder; // Normally curOrder+1, unless an effect changes it
+  u8 breakRow;  // Starting row when order changes (normally 0)
+  u8 patDelay;  // Rows left to wait (normally 0)
 
-	u8 tempo;						// In BPM (Hz = BPM*2/5)
+  u8 tempo; // In BPM (Hz = BPM*2/5)
 
-	u8 pad[2];
+  u8 pad[2];
 
-	MOD_CHANNEL channel[SND_MAX_CHANNELS];   // Current state of each channel
+  MOD_CHANNEL channel[SND_MAX_CHANNELS]; // Current state of each channel
 
 } MOD;
 
-
-
 // ----- Global vars -----
 
-extern SOUND_CHANNEL	sndChannel[SND_MAX_CHANNELS];
-extern SOUND_VARS		sndVars;
-extern MOD				sndMod;
+extern SOUND_CHANNEL sndChannel[SND_MAX_CHANNELS];
+extern SOUND_VARS sndVars;
+extern MOD sndMod;
 
 // ----- Tables generated by converter (in SndData.c) -----
 
@@ -195,8 +179,8 @@ extern const SAMPLE_HEADER dSfxTable[];
 // ----- Global functions -----
 
 extern void SndInit(SND_FREQ freq);
-extern void SndVSync() IN_IWRAM;				// in Irq.c
-extern void SndMix(u32 samplesToMix) IN_IWRAM;	// in Irq.c
+extern void SndVSync() IN_IWRAM;               // in Irq.c
+extern void SndMix(u32 samplesToMix) IN_IWRAM; // in Irq.c
 extern void SndUpdate();
 
 extern void SndPlayMOD(u32 modIdx);
@@ -204,7 +188,7 @@ extern void SndStopMOD();
 extern void SndPauseMOD();
 extern void SndUnpauseMOD();
 extern void SndSetMODCallback(MOD_CALLBACK callback);
-extern u32  SndPlaySFX(u32 sfxIdx);
+extern u32 SndPlaySFX(u32 sfxIdx);
 extern void SndPlaySFXChn(u32 sfxIdx, u32 channel);
 extern void SndStopSFX(u32 channel);
 extern void SndStopAllSFX();
