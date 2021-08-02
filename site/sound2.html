@@ -14,7 +14,7 @@ Howdy, and welcome to day 2 of the sound tutorial. In day 1, we learned how to p
 <a href="sound2.html#resampling">2. Resampling</a><br>
 <a href="sound2.html#mixing">3. Mixing</a><br><br>
 
-<a href="sound2.zip">Example project</a><br><br><br><br>
+<a href="https://github.com/stuij/deku-sound-tutorial/tree/main/code/day-2">Example project</a><br><br><br><br>
 
 
 
@@ -166,7 +166,7 @@ void SoundMix()
    }
 }</pre>
 
-Lots of new ideas to absorb, but still, that's not a whole lot of code, and it is a fully functional mixer.<br><br>Here is an <a href="sound2.zip">example project</a> putting everything we've done so far to use. Mostly what you need to see are Sound.c/.h, Irq.c and Main.c. Also, SndData.S is a raw sample, converted from Data\Piano.raw using b2x. Piano.raw was converted from Data\Piano.wav by saving it as raw PCM data in CoolEdit.<br><br>
+Lots of new ideas to absorb, but still, that's not a whole lot of code, and it is a fully functional mixer.<br><br>Here is an <a href="https://github.com/stuij/deku-sound-tutorial/tree/main/code/day-2">example project</a> putting everything we've done so far to use. Mostly what you need to see are Sound.c/.h, Irq.c and Main.c. Also, SndData.S is a raw sample, converted from Data\Piano.raw using b2x. Piano.raw was converted from Data\Piano.wav by saving it as raw PCM data in CoolEdit.<br><br>
 This mixer is a little slow though. One way you can speed it up a little is by skipping the check for wether the sound ended, unless you know it's actually going to be ending this frame. To find out if it will be ending, do this:<br><br>
 
 <pre>if(chnPtr->pos + chnPtr->inc*soundVars.mixBufferSize >= chnPtr->length)
