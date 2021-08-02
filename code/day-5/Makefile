@@ -2,11 +2,11 @@ CC = arm-none-eabi-gcc
 LD = arm-none-eabi-ld
 OBJCOPY = arm-none-eabi-objcopy
 
-NAME = Example
+GBANAME = Example
 CARMFLAGS	= -c -O2 -marm -mthumb-interwork -ffreestanding
 CTHUMBFLAGS	= -c -O2 -mthumb -mthumb-interwork -ffreestanding
 ASFLAGS	= -c -mthumb-interwork -ffreestanding
-LDFLAGS	= -T lnkscript -Map $(NAME).map
+LDFLAGS	= -T lnkscript -Map $(GBANAME).map
 
 MAKEFILE = Makefile
 
@@ -33,7 +33,7 @@ O_FILES = $(O_S_FILES) $(O_C_FILES) $(O_C_ARM_FILES)
 
 .PHONY: all clean reqs
 
-all : reqs $(NAME).gba
+all : reqs $(GBANAME).gba
 
 reqs :
 	cd FreqTable && make
@@ -41,11 +41,11 @@ reqs :
 	cd Converter && make
 	./convert-data.sh
 
-$(NAME).gba : $(NAME).elf $(MAKEFILE)
-	$(OBJCOPY) -v -O binary $(NAME).elf $(NAME).gba
+$(GBANAME).gba : $(GBANAME).elf $(MAKEFILE)
+	$(OBJCOPY) -v -O binary $(GBANAME).elf $(GBANAME).gba
 
-$(NAME).elf : $(O_FILES) $(MAKEFILE)
-	$(LD) $(LDFLAGS) -o $(NAME).elf $(O_FILES)
+$(GBANAME).elf : $(O_FILES) $(MAKEFILE)
+	$(LD) $(LDFLAGS) -o $(GBANAME).elf $(O_FILES)
 
 $(O_C_FILES) : $(SRC_C_FILES) $(MAKEFILE)
 	$(CC) $(CTHUMBFLAGS) $(@:_c.o=.c) -o $@
@@ -59,4 +59,4 @@ $(O_S_FILES) : $(SRC_S_FILES) $(MAKEFILE)
 clean:
 	rm */*.o *.o Converter/converter FreqTable/freqtable \
 	  Data/SndData.* FreqTable.txt \
-	  Example.elf Example.map
+	  Example.*

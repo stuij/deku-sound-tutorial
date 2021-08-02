@@ -2,11 +2,11 @@ CC = arm-none-eabi-gcc
 LD = arm-none-eabi-ld
 OBJCOPY = arm-none-eabi-objcopy
 
-NAME = Example
+GBANAME = Example
 CARMFLAGS	= -c -O2 -marm -mthumb-interwork -ffreestanding
 CTHUMBFLAGS	= -c -O2 -mthumb -mthumb-interwork -ffreestanding
 ASFLAGS	= -c -mthumb-interwork -ffreestanding
-LDFLAGS	= -T lnkscript -Map $(NAME).map
+LDFLAGS	= -T lnkscript -Map $(GBANAME).map
 
 SRC_C_FILES =\
 Main.c\
@@ -25,13 +25,15 @@ SndData.s
 
 O_FILES = $(SRC_S_FILES:.s=.o) $(SRC_C_FILES:.c=.o) $(SRC_C_ARM_FILES:.c=.o)
 
-all : $(NAME).gba
+.PHONY: all clean
 
-$(NAME).gba : $(NAME).elf
-	$(OBJCOPY) -v -O binary $(NAME).elf $(NAME).gba
+all : $(GBANAME).gba
 
-$(NAME).elf : $(O_FILES)
-	$(LD) $(LDFLAGS) -o $(NAME).elf $(O_FILES)
+$(GBANAME).gba : $(GBANAME).elf
+	$(OBJCOPY) -v -O binary $(GBANAME).elf $(GBANAME).gba
+
+$(GBANAME).elf : $(O_FILES)
+	$(LD) $(LDFLAGS) -o $(GBANAME).elf $(O_FILES)
 
 $(SRC_C_FILES:.c=.o) : $(SRC_C_FILES)
 	$(CC) $(CTHUMBFLAGS) $(@:.o=.c) -o $@
@@ -41,3 +43,6 @@ $(SRC_C_ARM_FILES:.c=.o) : $(SRC_C_FILES)
 
 $(SRC_S_FILES:.s=.o) : $(SRC_S_FILES)
 	$(CC) $(ASFLAGS) $(@:.o=.s) -o $@
+
+clean:
+	rm *.o Example.*

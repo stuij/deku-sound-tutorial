@@ -10,12 +10,6 @@
 
 <p>This is a mirror with slight modifications of Deku's <a href="https://deku.gbadev.org/program/sound1.html">sound mixing tutorial</a> (see link). I sent Deku an email, and he was very happy for the tutorial to be mirrored and asked for it to be covered by a public domain license, which now is a CC0 license. See the <a href="https://github.com/stuij/deku-sound-tutorial">root</a> of the repo.</p>
 
-<p>The main reason for this mirror is that I've made the sound examples compile on POSIX systems (and to compile in general, as there were some bugs that weren't related to a specific toolchain). The code examples linked from the pages below will compile with <a href="https://devkitpro.org/wiki/Getting_Started">devkitARM</a> on both Linux and Windows in a POSIX environment like MSYS2.</p>
-
-<p>Besides that, I've added Makefiles to all the example files, and a top-level Makefile that will compile them all in one go. I also fixed any warnings, and I changed the Converter and FreqTable behaviour to not require a keypress at the end of the program, as that's not really necessary in a Linux-like environment (the shell doesn't just disappear from under your nose when a program has stopped running).</p>
-
-<p>Cosmetically, I've changed the layout of the tutorial a bit to set the width of the text to 800px and I changed the page colors to white text on black background. Also I ran the example code through clang-format so I can read it in a format I personally prefer, which is of course very arbitrary.</p>
-<br/>
 <p>The lessons of the tutorial:</p>
 <ul>
 <li><a href="sound1.html">Day 1</a></li>
@@ -27,3 +21,11 @@
 <li><a href="sound7.html">Day 7</a></li>
 <li><a href="sound8.html">Day 8</a></li>
 </ul>
+
+<p>The main reason for this mirror is that I've made the sound examples compile on POSIX systems (and to compile in general, as there were some bugs that weren't related to a specific toolchain). The code examples linked from the pages below will compile with <a href="https://devkitpro.org/wiki/Getting_Started">devkitARM</a> on Linux, OSX and Windows in a POSIX environment like MSYS2.</p>
+
+<p>Besides that, I've added Makefiles to all the example files, and a top-level Makefile that will compile them all in one go by executing <code>make</code> in the <code>code</code> directory. At the top of the Makefile in that directory, you can configure the paths to the relevant GBA toolchain programs, like gcc. There are two programs, <code>Converter</code> and <code>FreqTable</code>, which are compiled for the host system. These are expected to find g++ from the <code>PATH</code> set in the environment.</p>
+
+<p>I also fixed any warnings, and I changed the <code>Converter</code> and <code>FreqTable</code> behaviour to not require a keypress at the end of the program, as that's not really necessary in a Linux-like environment (the shell doesn't just disappear from under your nose when a program has stopped running).</p>
+
+<p>Cosmetically, I've changed the layout of the tutorial a bit to set the width of the text to 800px and I changed the page colors to white text on black background. The default text font is now Arial. Also I ran the example code through clang-format so I can read it in a format I personally prefer, which is of course very arbitrary.</p>

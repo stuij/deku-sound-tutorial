@@ -1,7 +1,12 @@
-*.o
+converter
+freqtable
 *.elf
-*.map
+*.gba
 *.json
+*.map
+*.o
+*.sav
+*.txt
 SndData.s
 SndData.c
 SndData.h
