@@ -2,7 +2,6 @@
 
 #include <stdio.h>  // for file IO
 #include <stdlib.h> // for stuff
-#include <termios.h>
 #include <unistd.h>
 
 #define AMIGA_VAL 3579545
@@ -49,19 +48,6 @@ const u16 periodTable[16][12] = {
     // Finetune -1
     {862, 814, 768, 725, 684, 646, 610, 575, 543, 513, 484, 457},
 };
-
-// emulate getch() from the DOS conio.h header
-int getch(void) {
-  struct termios oldattr, newattr;
-  int ch;
-  tcgetattr(STDIN_FILENO, &oldattr);
-  newattr = oldattr;
-  newattr.c_lflag &= ~(ICANON | ECHO);
-  tcsetattr(STDIN_FILENO, TCSANOW, &newattr);
-  ch = getchar();
-  tcsetattr(STDIN_FILENO, TCSANOW, &oldattr);
-  return ch;
-}
 
 int main(int argc, char **argv) {
   FILE *file;
@@ -122,8 +108,6 @@ int main(int argc, char **argv) {
   }
   fprintf(file, "\n};\n");
 
-  fprintf(stdout, "Success!\nPress any key to continue.\n");
-  getch();
-
+  fprintf(stdout, "Success!\n");
   return 0;
 }

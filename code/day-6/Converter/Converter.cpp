@@ -9,7 +9,6 @@
 #include <stdio.h>  // for file IO
 #include <stdlib.h> // for stuff
 #include <string.h>
-#include <termios.h>
 #include <unistd.h>
 
 // These are just to decide what size of pointer arrays to make at the start
@@ -35,19 +34,6 @@
 #define FALSE 0
 #define TRUE 1
 
-// emulate getch() from the DOS conio.h header
-int getch(void) {
-  struct termios oldattr, newattr;
-  int ch;
-  tcgetattr(STDIN_FILENO, &oldattr);
-  newattr = oldattr;
-  newattr.c_lflag &= ~(ICANON | ECHO);
-  tcsetattr(STDIN_FILENO, TCSANOW, &newattr);
-  ch = getchar();
-  tcsetattr(STDIN_FILENO, TCSANOW, &oldattr);
-  return ch;
-}
-
 // Define our assert. The Cleanup function in here frees up any
 // dynamic memory claimed so far. There are probably better ways
 // to do it, but this is pretty easy.
@@ -56,7 +42,6 @@ int getch(void) {
     fprintf(stdout, "\nASSERT FAILED\n\t%s\n\tLine %i\n\n", __FILE__,          \
             __LINE__);                                                         \
     Cleanup();                                                                 \
-    getch();                                                                   \
     exit(1);                                                                   \
   }
 
@@ -144,8 +129,7 @@ int main(int argc, char **argv) {
   // die if we didn't get 1 argument (arg 0 is just the name of the
   // program, arg 1 is the first real argument, so we should have 2 total)
   if (argc != 2) {
-    fprintf(stdout, "Usage: converter [folder]\nPress any key to continue.\n");
-    getch();
+    fprintf(stdout, "Usage: converter [folder]\n");
     exit(1);
   }
   strcpy(dirName, argv[1]);
@@ -235,11 +219,8 @@ int main(int argc, char **argv) {
   // Restore old working directory before exiting
   chdir(oldDir);
 
-  fprintf(stdout, "Success! Press any key to continue.\n");
-  getch();
-
+  fprintf(stdout, "Success!\n");
   return 0;
-
 } // main
 
 void GeneratePeriodTable() {
@@ -279,7 +260,6 @@ u32 GetFileList(char **fileTable, u32 maxFiles) {
     perror("getcwd() error");
     return 0;
   }
-  printf("Current working dir: %s\n", cwd);
 
   DIR *dir;
   struct dirent *ent;
@@ -290,7 +270,6 @@ u32 GetFileList(char **fileTable, u32 maxFiles) {
 
   u32 curFile = 0;
   while ((ent = readdir(dir)) != NULL) {
-    printf("%s\n", ent->d_name);
     if (ends_with_mod(ent->d_name)) {
       fileTable[curFile] = new char[strlen(ent->d_name) + 1];
       ASSERT(fileTable[curFile] != NULL); // Handle running out of memory
