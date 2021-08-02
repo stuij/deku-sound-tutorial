@@ -11,8 +11,9 @@
 // 05/06/05 - Added all effect functions.
 // ----------------------
 
+#include "Math.h"
+#include "Misc.h"
 #include "Sound.h"
-#include "Gba.h"
 
 // ----- Constants -----
 

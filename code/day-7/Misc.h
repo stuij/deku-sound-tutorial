@@ -10,8 +10,17 @@
 extern u16 keyNew, keyOld;
 
 // functions in Misc.c
-extern inline void LoadBgPal16(u8 palIdx, const u16 *src);
-extern void Dma3(void *dest, const void *src, u32 length, u32 mode);
+inline void Dma3(void *dest, const void *src, u32 count, u16 flags) {
+  REG_DM3SAD = (u32)src;
+  REG_DM3DAD = (u32)dest;
+  REG_DM3CNT_L = count;
+  REG_DM3CNT_H = flags;
+}
+
+inline void LoadBgPal16(u8 idx, const u16 *src) {
+  Dma3((void *)(((void *)PAL_BG) + (idx << 5)), (void *)src, 16, DMA_MEMCPY16);
+}
+
 extern void memset(void *dest, u8 val, u32 size);
 extern u8 *htoa(u32 number);
 

@@ -7,8 +7,9 @@
 //            since nothing outside player needs to know them
 // ----------------------
 
+#include "Math.h"
+#include "Misc.h"
 #include "Sound.h"
-#include "Gba.h"
 
 // ----- Constants -----
 

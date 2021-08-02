@@ -5,8 +5,9 @@
 //            needed for a full frame
 // ----------------------
 
+#include "Math.h"
+#include "Misc.h"
 #include "Sound.h"
-#include "Gba.h"
 
 // ----- Constants -----
 

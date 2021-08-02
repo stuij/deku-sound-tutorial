@@ -1,5 +1,6 @@
-#include "Sound.h"
 #include "Gba.h"
+#include "Misc.h"
+#include "Sound.h"
 
 // structure to store all the frequency settings we allow
 typedef struct _FREQ_TABLE {
@@ -10,14 +11,13 @@ typedef struct _FREQ_TABLE {
 } FREQ_TABLE;
 
 static const FREQ_TABLE freqTable[SND_FREQ_NUM] = {
-  // timer, frequency, and buffer size for frequencies
-  // that time out perfectly with VBlank.
-  // These are in the order of the SND_FREQ enum in Sound.h.
-  {62610, 5734, 96},   {63940, 10512, 176}, {64282, 13379, 224},
-  {64612, 18157, 304}, {64738, 21024, 352}, {64909, 26758, 448},
-  {65004, 31536, 528}, {65073, 36314, 608}, {65118, 40137, 672},
-  {65137, 42048, 704}, {65154, 43959, 736}
-};
+    // timer, frequency, and buffer size for frequencies
+    // that time out perfectly with VBlank.
+    // These are in the order of the SND_FREQ enum in Sound.h.
+    {62610, 5734, 96},   {63940, 10512, 176}, {64282, 13379, 224},
+    {64612, 18157, 304}, {64738, 21024, 352}, {64909, 26758, 448},
+    {65004, 31536, 528}, {65073, 36314, 608}, {65118, 40137, 672},
+    {65137, 42048, 704}, {65154, 43959, 736}};
 
 // Globals, as seen in tutorial day 2. In the tutorial, I hardcoded
 // SOUND_MAX_CHANNELS to 4, but it's the same ffect either way
