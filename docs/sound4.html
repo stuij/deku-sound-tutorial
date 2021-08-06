@@ -28,50 +28,49 @@ The second way is to shove all our files into one folder and pass this folder as
 
 The code to search a directory for files is a little funky, but this will do it:<br><br>
 
-<pre>#include &lt;direct.h&gt;   // Directory functions
-#include &lt;io.h&gt;       // Search functions
+<pre>int ends_with_mod(const char *txt) {
+  int txt_len = strlen(txt);
+  if (txt_len > 4) {
+    if ((*(txt + txt_len - 4) == '.') &&
+        ((*(txt + txt_len - 3) == 'm') || (*(txt + txt_len - 3) == 'M')) &&
+        ((*(txt + txt_len - 2) == 'o') || (*(txt + txt_len - 2) == 'O')) &&
+        ((*(txt + txt_len - 1) == 'd') || (*(txt + txt_len - 1) == 'D'))) {
+      return 1;
+    }
+  }
+  return 0;
+}
 
-   // fileTable is a pre-allocated array of maxFiles char*'s.
-   // typeStr should be "*.mod"
-   // Returns the number of files loaded.
-u32 GetFileList(char *dirName, char **fileTable, u32 maxFiles, char *typeStr)
-{
-   char   oldDir[256];
-   u32    fileCount;
-   struct _finddata_t findData;
-   int    hSearch;
-   int    hFile;
+// fileTable is a pre-allocated array of maxFiles char*'s.
+// Returns the number of files loaded.
+u32 GetFileList(char **fileTable, u32 maxFiles) {
+  char cwd[PATH_MAX];
+  if (getcwd(cwd, sizeof(cwd)) == NULL) {
+    perror("getcwd() error");
+    return 0;
+  }
 
-      // Remember the old working directory
-   _getcwd(oldDir, 256);
+  DIR *dir;
+  struct dirent *ent;
+  if ((dir = opendir(cwd)) == NULL) {
+    printf("Unable to open directory %s...\n", cwd);
+    return 0;
+  }
 
-      // Set current working directory to the argument
-   int result = _chdir(dirName)
-   if(result == 0)
-   {
-      fprintf(stderr, "Folder does not exist\n");
-      exit(1);
-   }
-
-      // Do standard library stuff, I just looked it up in MSDN
-   hSearch = _findfirst(typeStr, &findData);
-   hFile = hSearch;
-
-   curFile = 0;
-   while(hFile != -1 && curFile < maxFiles)
-   {
-         // Allocate buffer for string, +1 for null
-      fileTable[curFile] = new char[strlen(findData.name) + 1];
-      ASSERT(fileTable[curFile] != NULL);   // Handle running out of memory
-      strcpy(fileTable[curFile], findData.name);
+  u32 curFile = 0;
+  while ((ent = readdir(dir)) != NULL) {
+    if (ends_with_mod(ent->d_name)) {
+      fileTable[curFile] = new char[strlen(ent->d_name) + 1];
+      ASSERT(fileTable[curFile] != NULL); // Handle running out of memory
+      strcpy(fileTable[curFile], ent->d_name);
 
       curFile++;
-      hFile = _findnext(hSearch, &findData);
-   }
-   _findclose(hFile);
+    }
+  }
+  closedir(dir);
 
-      // curFile also happens to be the number of files loaded
-   return curFile;
+  // curFile also happens to be the number of files loaded
+  return curFile;
 }</pre>
 
 To remove duplicate samples, instead of loading the data directly for each sample, we will make a table of "sample datas", and have each SAMPLE_HEADER store an index into that instead of a pointer to the raw data. Each time we load a new sample, we'll search through the table for an exact copy, and if we find one, we'll just return that index instead of adding a new entry. The specifics of this will be covered later.<br><br>
