@@ -55,8 +55,7 @@ int AgbMain() {
 
     // print the instructions
     FontPrint(0, 0, BGS(31), "Sound example");
-    FontPrint(0, 1, BGS(31), "L/R: play sounds");
-    FontPrint(0, 2, BGS(31), "B: stop all sounds");
+    FontPrint(0, 1, BGS(31), "Start: play song");
 
     if (KEYPRESS(KEY_START)) {
       SndPlayMOD(MOD_BIT_Introtune);
