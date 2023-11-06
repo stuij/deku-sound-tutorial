@@ -109,7 +109,7 @@ static const FREQ_TABLE freqTable[SND_FREQ_NUM] = {
     // These are in the order of the SND_FREQ enum in Sound.h.
     {62610, 5734, 96},   {63940, 10512, 176}, {64282, 13379, 224},
     {64612, 18157, 304}, {64738, 21024, 352}, {64909, 26758, 448},
-    {65004, 31536, 528}, {65073, 36314, 608}, {65118, 40137, 672},
+    {65004, 31536, 528}, {65074, 36314, 608}, {65118, 40137, 672},
     {65137, 42048, 704}, {65154, 43959, 736}};
 
 // Save ourselves the trouble of initializing each member in code
